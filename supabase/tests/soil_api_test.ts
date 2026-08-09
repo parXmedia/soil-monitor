@@ -3,12 +3,16 @@ import {
   authenticateIngest,
   authorizeRead,
   canonicalIngestMessage,
+  clientKey,
   decodeJsonBody,
+  historyBucketSeconds,
   hmacSignatureBase64Url,
   parseHistoryHours,
+  RateLimiter,
   sha256Hex,
   signalFromRssi,
   toDashboardReading,
+  toDashboardSeriesPoint,
   validateTelemetry,
 } from "../functions/soil-api/soil_api.ts";
 
@@ -190,4 +194,89 @@ Deno.test("JSON size limit and dashboard response contract stay stable", async (
   assert(reading.moisture === 42.6);
   assert(reading.millivolts === 1760);
   assert(reading.batteryVoltage === 4.05);
+});
+
+Deno.test("history buckets keep every supported range bounded", () => {
+  // The regression this guards: a seven-day window at 30-second sampling is
+  // 20,160 raw readings. The old fixed 2,500-row cap returned the newest ~21
+  // hours and said nothing about the missing six days.
+  for (const hours of [6, 24, 168]) {
+    const bucketSeconds = historyBucketSeconds(hours);
+    const points = (hours * 3600) / bucketSeconds;
+    assert(points <= 400, `${hours}h yields ${points} points`);
+    assert(points >= 100, `${hours}h yields only ${points} points`);
+  }
+
+  let rejected = false;
+  try {
+    historyBucketSeconds(72);
+  } catch (error) {
+    rejected = error instanceof ApiError && error.code === "invalid_range";
+  }
+  assert(rejected, "unsupported ranges must be rejected, not silently bucketed");
+});
+
+Deno.test("series points expose aggregate span and survive null columns", () => {
+  const point = toDashboardSeriesPoint({
+    bucket: "2026-08-09T18:00:00.000Z",
+    sample_count: 12,
+    moisture_avg: "42.55",
+    moisture_min: "40.10",
+    moisture_max: "45.00",
+    raw_adc_avg: 2184,
+    sensor_mv_avg: 1760,
+    rssi_avg: -72,
+    battery_mv_avg: null,
+  });
+  assert(point.moisture === 42.55);
+  assert(point.moistureMin === 40.1);
+  assert(point.moistureMax === 45);
+  assert(point.sampleCount === 12);
+  assert(point.batteryVoltage === null);
+  assert(point.signal === signalFromRssi(-72));
+
+  // A bucket with no RSSI must not be reported as a perfect link.
+  const missing = toDashboardSeriesPoint({
+    bucket: "2026-08-09T19:00:00.000Z",
+    sample_count: 1,
+    moisture_avg: 10,
+    moisture_min: null,
+    moisture_max: null,
+    raw_adc_avg: null,
+    sensor_mv_avg: null,
+    rssi_avg: null,
+    battery_mv_avg: null,
+  });
+  assert(missing.rssi === -127);
+  assert(missing.signal === 0);
+});
+
+Deno.test("rate limiter caps a flood without blocking normal polling", () => {
+  const limiter = new RateLimiter(3, 60_000);
+  const start = 1_000_000;
+  assert(limiter.check("1.2.3.4", start).allowed);
+  assert(limiter.check("1.2.3.4", start + 10).allowed);
+  assert(limiter.check("1.2.3.4", start + 20).allowed);
+
+  const blocked = limiter.check("1.2.3.4", start + 30);
+  assert(!blocked.allowed, "fourth request in the window must be rejected");
+  assert(blocked.retryAfterSeconds >= 1 && blocked.retryAfterSeconds <= 60);
+
+  // A different caller has its own budget.
+  assert(limiter.check("5.6.7.8", start + 30).allowed);
+  // The window rolls over.
+  assert(limiter.check("1.2.3.4", start + 60_001).allowed);
+});
+
+Deno.test("client key prefers the first forwarded address and is bounded", () => {
+  const forwarded = new Headers({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" });
+  assert(clientKey(forwarded) === "203.0.113.7");
+
+  const direct = new Headers({ "cf-connecting-ip": "198.51.100.9" });
+  assert(clientKey(direct) === "198.51.100.9");
+
+  assert(clientKey(new Headers()) === "unknown");
+
+  const oversized = new Headers({ "x-forwarded-for": "a".repeat(200) });
+  assert(clientKey(oversized).length <= 64);
 });

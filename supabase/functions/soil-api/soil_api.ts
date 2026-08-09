@@ -5,6 +5,24 @@ export const MAX_BODY_BYTES = 2_048;
 export const MAX_SEQUENCE = 4_294_967_295;
 export const HISTORY_HOURS = new Set([6, 24, 168]);
 
+// Bucket width per supported range, chosen so every response stays under a few
+// hundred points regardless of the sampling cadence. The previous fixed
+// 2,500-row limit meant a seven-day request at 30-second sampling returned
+// only the newest ~21 hours with nothing to indicate the rest was missing.
+export const HISTORY_BUCKET_SECONDS: Record<number, number> = {
+  6: 120,
+  24: 600,
+  168: 3_600,
+};
+
+export function historyBucketSeconds(hours: number): number {
+  const bucket = HISTORY_BUCKET_SECONDS[hours];
+  if (bucket === undefined) {
+    throw new ApiError(400, "invalid_range", "hours must be one of 6, 24, or 168");
+  }
+  return bucket;
+}
+
 export interface AuthenticatedEnvelope {
   deviceId: string;
   bootId: string;
@@ -301,6 +319,84 @@ export async function authorizeRead(headers: Headers, expectedToken: string): Pr
   ) {
     throw new ApiError(401, "unauthorized", "Authentication failed");
   }
+}
+
+export interface SeriesPoint {
+  bucket: string;
+  sample_count: number;
+  moisture_avg: number | string;
+  moisture_min: number | string | null;
+  moisture_max: number | string | null;
+  raw_adc_avg: number | null;
+  sensor_mv_avg: number | null;
+  rssi_avg: number | null;
+  battery_mv_avg: number | null;
+}
+
+export function toDashboardSeriesPoint(point: SeriesPoint): Record<string, unknown> {
+  const rssi = point.rssi_avg ?? -127;
+  return {
+    timestamp: point.bucket,
+    moisture: Number(point.moisture_avg),
+    moistureMin: point.moisture_min === null ? null : Number(point.moisture_min),
+    moistureMax: point.moisture_max === null ? null : Number(point.moisture_max),
+    rawAdc: point.raw_adc_avg,
+    millivolts: point.sensor_mv_avg,
+    rssi,
+    signal: signalFromRssi(rssi),
+    batteryVoltage: point.battery_mv_avg === null ? null : point.battery_mv_avg / 1000,
+    batteryPercent: null,
+    sampleCount: point.sample_count,
+  };
+}
+
+// Fixed-window counter keyed by client address. Authentication already runs
+// before any database work, so this exists to cap Supabase invocation spend
+// during a flood rather than to protect the data itself.
+export class RateLimiter {
+  // Declared as plain fields rather than constructor parameter properties so
+  // the suite also runs under Node's strip-only TypeScript loader.
+  readonly limit: number;
+  readonly windowMs: number;
+  private readonly hits = new Map<string, { count: number; resetAt: number }>();
+
+  constructor(limit: number, windowMs: number) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+  }
+
+  check(key: string, nowMs: number): { allowed: boolean; retryAfterSeconds: number } {
+    const existing = this.hits.get(key);
+    if (existing === undefined || nowMs >= existing.resetAt) {
+      // Opportunistic sweep keeps the map from growing without bound on an
+      // isolate that stays warm for a long time.
+      if (this.hits.size > 1_000) {
+        for (const [entryKey, entry] of this.hits) {
+          if (nowMs >= entry.resetAt) this.hits.delete(entryKey);
+        }
+      }
+      this.hits.set(key, { count: 1, resetAt: nowMs + this.windowMs });
+      return { allowed: true, retryAfterSeconds: 0 };
+    }
+
+    existing.count += 1;
+    if (existing.count > this.limit) {
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil((existing.resetAt - nowMs) / 1000)),
+      };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+}
+
+export function clientKey(headers: Headers): string {
+  const forwarded = headers.get("x-forwarded-for");
+  if (forwarded !== null && forwarded.length > 0) {
+    const first = forwarded.split(",", 1)[0].trim();
+    if (first.length > 0 && first.length <= 64) return first;
+  }
+  return headers.get("cf-connecting-ip")?.slice(0, 64) ?? "unknown";
 }
 
 export function signalFromRssi(rssi: number): number {

@@ -6,3 +6,9 @@ project_id = "lafvin-wireless-soil-monitor"
 [functions.soil-api]
 verify_jwt = false
 
+# Called by the scheduler, not by a signed-in user. It authenticates with the
+# shared SOIL_CRON_SECRET in the Authorization header and refuses everything
+# else, so the platform's JWT gate would only get in the way.
+[functions.alert-monitor]
+verify_jwt = false
+

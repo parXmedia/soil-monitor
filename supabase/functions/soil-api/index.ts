@@ -2,13 +2,22 @@ import {
   ApiError,
   authenticateIngest,
   authorizeRead,
+  clientKey,
   decodeJsonBody,
+  historyBucketSeconds,
   MAX_BODY_BYTES,
   parseHistoryHours,
+  RateLimiter,
   toDashboardReading,
+  toDashboardSeriesPoint,
   validateTelemetry,
 } from "./soil_api.ts";
-import type { StoredTelemetry } from "./soil_api.ts";
+import type { SeriesPoint, StoredTelemetry } from "./soil_api.ts";
+
+// Generous enough that the dashboard's 15-second poll and the gateway's
+// per-sample upload never notice, tight enough to blunt a scripted flood.
+const readLimiter = new RateLimiter(120, 60_000);
+const ingestLimiter = new RateLimiter(60, 60_000);
 
 interface RuntimeConfig {
   supabaseUrl: string;
@@ -248,19 +257,24 @@ async function currentTelemetry(config: RuntimeConfig): Promise<StoredTelemetry 
   return rows[0] ?? null;
 }
 
-async function historyTelemetry(config: RuntimeConfig, hours: number): Promise<StoredTelemetry[]> {
+async function historySeries(
+  config: RuntimeConfig,
+  hours: number,
+): Promise<SeriesPoint[]> {
+  const bucketSeconds = historyBucketSeconds(hours);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-  const url = restUrl(config, "telemetry", {
-    select: "*",
-    device_id: `eq.${config.deviceId}`,
-    sampled_at: `gte.${since}`,
-    order: "sampled_at.desc,id.desc",
-    limit: "2500",
+  const url = new URL("/rest/v1/rpc/telemetry_series", config.supabaseUrl);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: databaseHeaders(config, { "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      target_device_id: config.deviceId,
+      since,
+      bucket_seconds: bucketSeconds,
+    }),
   });
-  const response = await fetch(url, { headers: databaseHeaders(config) });
   if (!response.ok) throw new Error(`history lookup failed (${response.status})`);
-  const newestFirst = await response.json() as StoredTelemetry[];
-  return newestFirst.reverse();
+  return await response.json() as SeriesPoint[];
 }
 
 async function handleRequest(request: Request, config: RuntimeConfig): Promise<Response> {
@@ -278,6 +292,19 @@ async function handleRequest(request: Request, config: RuntimeConfig): Promise<R
 
   const url = new URL(request.url);
   const route = edgeRoute(url.pathname);
+  const caller = clientKey(request.headers);
+  const limiter = route === "/v1/ingest" ? ingestLimiter : readLimiter;
+  const quota = limiter.check(caller, Date.now());
+  if (!quota.allowed) {
+    return new Response(JSON.stringify({ error: "rate_limited" }), {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Retry-After": String(quota.retryAfterSeconds),
+        ...corsHeaders(origin, config),
+      },
+    });
+  }
 
   if (request.method === "POST" && route === "/v1/ingest") {
     const contentType = request.headers.get("content-type")
@@ -331,10 +358,16 @@ async function handleRequest(request: Request, config: RuntimeConfig): Promise<R
   if (request.method === "GET" && route === "/v1/history") {
     await authorizeRead(request.headers, config.readToken);
     const hours = parseHistoryHours(url.searchParams.get("hours"));
-    const rows = await historyTelemetry(config, hours);
+    const points = await historySeries(config, hours);
+    const readings = points.map(toDashboardSeriesPoint);
     return jsonResponse(200, {
       hours,
-      readings: rows.map(toDashboardReading),
+      bucketSeconds: historyBucketSeconds(hours),
+      // Stated explicitly so the dashboard can show the span it actually has
+      // rather than implying the full window was returned.
+      coveredFrom: readings.at(0)?.timestamp ?? null,
+      coveredTo: readings.at(-1)?.timestamp ?? null,
+      readings,
     }, origin, config);
   }
 
