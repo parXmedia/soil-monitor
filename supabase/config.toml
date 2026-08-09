@@ -1,0 +1,8 @@
+project_id = "lafvin-wireless-soil-monitor"
+
+# This function performs its own HMAC authentication for writes and a separate
+# read-token check for reads. Supabase JWT verification is therefore disabled at
+# the edge gateway, while database tables remain inaccessible to public roles.
+[functions.soil-api]
+verify_jwt = false
+
