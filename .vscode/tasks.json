@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Both ESP32 Targets",
+      "type": "shell",
+      "command": "${env:HOME}/.platformio/penv/bin/pio",
+      "args": ["run", "-e", "display_receiver", "-e", "sensor_transmitter"],
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": []
+    },
+    {
+      "label": "Upload LAFVIN Display Receiver",
+      "type": "shell",
+      "command": "${env:HOME}/.platformio/penv/bin/pio",
+      "args": ["run", "-e", "display_receiver", "-t", "upload"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Upload Soil Sensor Transmitter",
+      "type": "shell",
+      "command": "${env:HOME}/.platformio/penv/bin/pio",
+      "args": ["run", "-e", "sensor_transmitter", "-t", "upload"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Monitor LAFVIN Display",
+      "type": "shell",
+      "command": "${env:HOME}/.platformio/penv/bin/pio",
+      "args": ["device", "monitor", "-e", "display_receiver"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Monitor Soil Sensor",
+      "type": "shell",
+      "command": "${env:HOME}/.platformio/penv/bin/pio",
+      "args": ["device", "monitor", "-e", "sensor_transmitter"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Test Dashboard",
+      "type": "shell",
+      "command": "python3",
+      "args": ["-m", "unittest", "discover", "-s", "dashboard/tests", "-v"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
