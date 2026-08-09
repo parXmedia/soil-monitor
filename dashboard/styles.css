@@ -625,3 +625,12 @@ footer {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Span actually covered by the history chart. The API returns time-bucketed
+   aggregates, so the axis label alone can overstate what was recorded. */
+.chart-coverage {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: var(--muted, #91ae9c);
+  min-height: 1em;
+}

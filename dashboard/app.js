@@ -65,6 +65,38 @@ export function normalizeReading(payload) {
   });
 }
 
+// States the span the chart actually covers. The API returns time-bucketed
+// aggregates, so "7d" can legitimately be backed by hourly averages, and a
+// young deployment simply has less history than the button implies. Saying so
+// is better than drawing a partial line that looks like the full window.
+export function describeCoverage(payload, requestedHours) {
+  const readings = Array.isArray(payload) ? payload : payload?.readings;
+  if (!Array.isArray(readings) || readings.length === 0) return "";
+
+  const from = Date.parse(payload?.coveredFrom ?? readings[0]?.timestamp);
+  const to = Date.parse(payload?.coveredTo ?? readings[readings.length - 1]?.timestamp);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return "";
+
+  const spanHours = (to - from) / 3_600_000;
+  const bucketSeconds = Number(payload?.bucketSeconds);
+  const parts = [`${readings.length} points`];
+
+  if (Number.isFinite(bucketSeconds) && bucketSeconds >= 60) {
+    const minutes = Math.round(bucketSeconds / 60);
+    parts.push(minutes >= 60 ? "hourly averages" : `${minutes}-minute averages`);
+  }
+
+  // Only flag a shortfall worth noticing, not ordinary bucket-edge rounding.
+  if (spanHours < requestedHours * 0.9) {
+    const covered = spanHours < 1
+      ? `${Math.max(1, Math.round(spanHours * 60))} minutes`
+      : `${spanHours.toFixed(1)} hours`;
+    parts.push(`covering the last ${covered} — no older data recorded yet`);
+  }
+
+  return parts.join(" · ");
+}
+
 export function normalizeHistory(payload) {
   const source = Array.isArray(payload) ? payload : payload?.readings;
   if (!Array.isArray(source)) throw new TypeError("History response requires a readings array");
@@ -158,6 +190,7 @@ class SoilDashboard {
     this.config = config;
     this.current = null;
     this.history = [];
+    this.historyCoverage = "";
     this.historyHours = 24;
     this.failureCount = 0;
     this.lastHistoryFetchedAt = 0;
@@ -177,7 +210,7 @@ class SoilDashboard {
       "rssi-value", "battery-fill", "battery-value", "battery-voltage", "sensor-voltage",
       "raw-value", "sequence-value", "device-value", "history-title", "average-value",
       "minimum-value", "maximum-value", "trend-value", "history-chart", "chart-wrap",
-      "chart-empty", "chart-description", "refresh-label"
+      "chart-empty", "chart-description", "chart-coverage", "refresh-label"
     ];
     return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
   }
@@ -303,6 +336,7 @@ class SoilDashboard {
   async fetchHistory() {
     const payload = await this.requestJson(this.config.historyPath, { hours: this.historyHours });
     this.history = normalizeHistory(payload);
+    this.historyCoverage = describeCoverage(payload, this.historyHours);
     this.lastHistoryFetchedAt = Date.now();
     this.renderHistory();
     this.saveCache();
@@ -391,6 +425,9 @@ class SoilDashboard {
     this.elements["chart-description"].textContent = stats
       ? `${this.history.length} readings. Average ${stats.average.toFixed(1)} percent, minimum ${stats.minimum.toFixed(1)} percent, maximum ${stats.maximum.toFixed(1)} percent, trend ${stats.trend.toLowerCase()}.`
       : "No historical readings are available.";
+    if (this.elements["chart-coverage"]) {
+      this.elements["chart-coverage"].textContent = this.historyCoverage || "";
+    }
     this.drawChart();
   }
 
