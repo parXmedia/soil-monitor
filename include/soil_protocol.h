@@ -3,7 +3,8 @@
 #include <Arduino.h>
 
 constexpr uint32_t SOIL_PACKET_MAGIC = 0x534F494C; // "SOIL"
-constexpr uint8_t SOIL_PACKET_VERSION = 2;
+constexpr uint8_t SOIL_PACKET_LEGACY_VERSION = 2;
+constexpr uint8_t SOIL_PACKET_VERSION = 3;
 
 enum class SoilMessageType : uint8_t {
   Reading = 1,
@@ -38,7 +39,8 @@ struct __attribute__((packed)) SoilAckPacket {
   uint16_t length;
   uint32_t bootId;
   uint32_t sequence;
+  uint16_t requestedSampleSeconds;
 };
 
 static_assert(sizeof(SoilPacket) == 30, "Unexpected SoilPacket size");
-static_assert(sizeof(SoilAckPacket) == 16, "Unexpected SoilAckPacket size");
+static_assert(sizeof(SoilAckPacket) == 18, "Unexpected SoilAckPacket size");

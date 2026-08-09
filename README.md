@@ -3,7 +3,8 @@
 This project turns two ESP32-S3 boards into a long-range garden soil monitor:
 
 - A Seeed XIAO ESP32-S3 reads a Capacitive Soil Moisture Sensor v1.2, sends one
-  filtered sample, and returns to deep sleep for five minutes.
+  filtered sample, and returns to deep sleep for either 30 seconds or five
+  minutes.
 - A LAFVIN ESP32-S3 1.69-inch LCD board receives the sample, acknowledges it,
   keeps the moisture and wireless-strength screen active, and serves a local
   dashboard at `http://soil-monitor.local`.
@@ -22,7 +23,7 @@ not expose the gateway's HTTP server with router port forwarding or UPnP.
 
 ```mermaid
 flowchart LR
-    S["Garden XIAO ESP32-S3<br/>probe + five-minute deep sleep"]
+    S["Garden XIAO ESP32-S3<br/>probe + selectable deep sleep"]
     G["Indoor LAFVIN gateway<br/>LCD + local dashboard"]
     E["Supabase Edge Function<br/>HMAC validation"]
     D["Supabase Postgres<br/>RLS-protected telemetry"]
@@ -69,8 +70,12 @@ a different LCD board until its controller and pin map have been verified.
 ## Solar and battery deployment
 
 The transmitter firmware shuts down Wi-Fi, turns off the XIAO user LED, and
-enters timer deep sleep after each delivery attempt. The configured interval is
-`MEASUREMENT_INTERVAL_SECONDS=300` in [`platformio.ini`](platformio.ini).
+enters timer deep sleep after each delivery attempt. The temporary default is
+`MEASUREMENT_INTERVAL_SECONDS=30` in [`platformio.ini`](platformio.ini). The
+local dashboard can command either 30-second updates or the recommended
+five-minute low-power mode; the gateway stores the selection and includes it in
+the encrypted application acknowledgement. Thirty-second mode wakes the radio
+ten times as often and should be used only while actively testing.
 
 There are two important limitations in the present hardware:
 
@@ -197,15 +202,23 @@ header.
 ## Local display and dashboard
 
 The LCD continues to show the latest moisture percentage, raw ADC value, link
-state, signal percentage, and RSSI while the sensor sleeps. A normal five-minute
-sleep is not treated as a lost link: the gateway waits roughly three advertised
-sample intervals plus 15 seconds before changing the link to `LOST`.
+state, signal percentage, RSSI, and elapsed time since the last sensor update
+while the sensor sleeps. Freshness follows the sensor's advertised interval plus
+a bounded radio allowance: 30-second mode becomes stale after 60 seconds, and
+five-minute mode becomes stale after six minutes.
 
 On the same home LAN, open:
 
 ```text
 http://soil-monitor.local
 ```
+
+The **Sampling mode** card has an explicit switch: **ON** requests 30-second
+test updates and **OFF** requests five-minute low-power operation. The choice is
+sent to the sensor at its next check-in, so the card may briefly say `Pending`.
+The control endpoint accepts only a same-origin JavaScript request with a
+non-simple control header, which prevents a normal cross-site form from changing
+the mode.
 
 The local dashboard reports moisture, RSSI, packet reliability, raw ADC and
 sensor voltage, age, trend, and in-memory history. Its history resets whenever

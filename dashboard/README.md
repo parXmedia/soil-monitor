@@ -45,10 +45,12 @@ allow the `Authorization` request header in its CORS preflight response.
 Only `timestamp` and `moisture` are required. Battery fields are optional until
 battery-voltage sensing is added to the garden board.
 
-The garden transmitter is expected to send one sample every five minutes. The
-dashboard polls the cloud API every 15 seconds for low-latency delivery. A
-reading is labeled fresh through the five-minute sampling interval plus one
-minute of radio/upload grace; after six minutes it is explicitly stale.
+The garden transmitter supports a temporary 30-second test mode and a
+five-minute low-power mode. That setting is controlled only from the gateway's
+LAN dashboard at `soil-monitor.local`; the public page remains read-only. This
+dashboard polls the cloud API every 15 seconds and conservatively labels a
+reading stale after six minutes, which covers the low-power interval plus one
+minute of radio/upload grace.
 
 `GET {apiBaseUrl}/v1/history?hours=24`
 
