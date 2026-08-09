@@ -452,13 +452,19 @@ void seedLocalProvisioning() {
     const String localPassword = LOCAL_WIFI_PASSWORD;
     preferences.begin("soilwifi", false);
     const bool empty = preferences.getString("ssid", "").isEmpty();
-    if (empty) {
+    const uint32_t appliedVersion = preferences.getUInt("seed_ver", 0);
+    const bool versionUpgrade = LOCAL_PROVISIONING_VERSION > appliedVersion;
+    if (empty || versionUpgrade) {
       preferences.putString("ssid", localSsid);
       preferences.putString("password", localPassword);
+      if (LOCAL_PROVISIONING_VERSION > 0) {
+        preferences.putUInt("seed_ver", LOCAL_PROVISIONING_VERSION);
+      }
     }
     preferences.end();
     Serial.printf("Local Wi-Fi bootstrap: %s\n",
-                  empty ? "SEEDED" : "ALREADY SET");
+                  versionUpgrade ? "MIGRATED"
+                                 : (empty ? "SEEDED" : "ALREADY SET"));
   }
 
   const String localApiUrl = LOCAL_CLOUD_API_URL;
@@ -477,14 +483,20 @@ void seedLocalProvisioning() {
     const bool empty = preferences.getString("api", "").isEmpty() ||
                        preferences.getString("device", "").isEmpty() ||
                        preferences.getString("secret", "").isEmpty();
-    if (empty) {
+    const uint32_t appliedVersion = preferences.getUInt("seed_ver", 0);
+    const bool versionUpgrade = LOCAL_PROVISIONING_VERSION > appliedVersion;
+    if (empty || versionUpgrade) {
       preferences.putString("api", localApiUrl);
       preferences.putString("device", localDeviceId);
       preferences.putString("secret", localIngestSecret);
+      if (LOCAL_PROVISIONING_VERSION > 0) {
+        preferences.putUInt("seed_ver", LOCAL_PROVISIONING_VERSION);
+      }
     }
     preferences.end();
     Serial.printf("Local cloud bootstrap: %s\n",
-                  empty ? "SEEDED" : "ALREADY SET");
+                  versionUpgrade ? "MIGRATED"
+                                 : (empty ? "SEEDED" : "ALREADY SET"));
   } else if (anyCloudValue) {
     Serial.println("Local cloud bootstrap is incomplete or invalid");
   }
