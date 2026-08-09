@@ -445,6 +445,11 @@ bool cloudConfigured() {
          cloudIngestSecret.length() <= 256;
 }
 
+bool isProvisioningVersionUpgrade(uint32_t desiredVersion,
+                                  uint32_t appliedVersion) {
+  return desiredVersion != 0 && appliedVersion < desiredVersion;
+}
+
 void seedLocalProvisioning() {
 #if HAS_LOCAL_PROVISIONING
   const String localSsid = LOCAL_WIFI_SSID;
@@ -453,12 +458,14 @@ void seedLocalProvisioning() {
     preferences.begin("soilwifi", false);
     const bool empty = preferences.getString("ssid", "").isEmpty();
     const uint32_t appliedVersion = preferences.getUInt("seed_ver", 0);
-    const bool versionUpgrade = LOCAL_PROVISIONING_VERSION > appliedVersion;
+    const uint32_t desiredVersion = LOCAL_PROVISIONING_VERSION;
+    const bool versionUpgrade =
+        isProvisioningVersionUpgrade(desiredVersion, appliedVersion);
     if (empty || versionUpgrade) {
       preferences.putString("ssid", localSsid);
       preferences.putString("password", localPassword);
-      if (LOCAL_PROVISIONING_VERSION > 0) {
-        preferences.putUInt("seed_ver", LOCAL_PROVISIONING_VERSION);
+      if (desiredVersion != 0) {
+        preferences.putUInt("seed_ver", desiredVersion);
       }
     }
     preferences.end();
@@ -484,13 +491,15 @@ void seedLocalProvisioning() {
                        preferences.getString("device", "").isEmpty() ||
                        preferences.getString("secret", "").isEmpty();
     const uint32_t appliedVersion = preferences.getUInt("seed_ver", 0);
-    const bool versionUpgrade = LOCAL_PROVISIONING_VERSION > appliedVersion;
+    const uint32_t desiredVersion = LOCAL_PROVISIONING_VERSION;
+    const bool versionUpgrade =
+        isProvisioningVersionUpgrade(desiredVersion, appliedVersion);
     if (empty || versionUpgrade) {
       preferences.putString("api", localApiUrl);
       preferences.putString("device", localDeviceId);
       preferences.putString("secret", localIngestSecret);
-      if (LOCAL_PROVISIONING_VERSION > 0) {
-        preferences.putUInt("seed_ver", LOCAL_PROVISIONING_VERSION);
+      if (desiredVersion != 0) {
+        preferences.putUInt("seed_ver", desiredVersion);
       }
     }
     preferences.end();
