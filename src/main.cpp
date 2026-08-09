@@ -636,8 +636,10 @@ void handleApiData() {
   json += ",\"calibration_dry\":" + String(calibrationDryRaw);
   json += ",\"calibration_wet\":" + String(calibrationWetRaw);
   json += ",\"calibrated\":" + String(calibrationFromUser ? "true" : "false");
-  json += ",\"cloud_pending\":" + String(spoolPendingCount());
-  json += ",\"cloud_dropped\":" + String(spoolDroppedCount);
+  json += ",\"cloud_pending\":" +
+          String(static_cast<unsigned long>(spoolPendingCount()));
+  json += ",\"cloud_dropped\":" +
+          String(static_cast<unsigned long>(spoolDroppedCount));
   json += ",\"cloud_buffer\":\"" + String(spoolReady ? "flash" : "ram") + "\"";
   json += ",\"cloud_online\":" +
           String(cloudUploadOnline ? "true" : "false");

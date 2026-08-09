@@ -70,12 +70,13 @@ a different LCD board until its controller and pin map have been verified.
 ## Solar and battery deployment
 
 The transmitter firmware shuts down Wi-Fi, turns off the XIAO user LED, and
-enters timer deep sleep after each delivery attempt. The temporary default is
-`MEASUREMENT_INTERVAL_SECONDS=30` in [`platformio.ini`](platformio.ini). The
-local dashboard can command either 30-second updates or the recommended
-five-minute low-power mode; the gateway stores the selection and includes it in
-the encrypted application acknowledgement. Thirty-second mode wakes the radio
-ten times as often and should be used only while actively testing.
+enters timer deep sleep after each delivery attempt. The default is
+`MEASUREMENT_INTERVAL_SECONDS=300` in [`platformio.ini`](platformio.ini). The
+local dashboard can command either five-minute low-power mode or 30-second
+updates; the gateway stores the selection and includes it in the encrypted
+application acknowledgement. Thirty-second mode wakes the radio ten times as
+often and fills the database ten times faster, so it is a bench-test cadence
+only. A firmware update resets the stored selection back to low power.
 
 There are two important limitations in the present hardware:
 
@@ -86,12 +87,16 @@ There are two important limitations in the present hardware:
    `SENSOR_POWER_PIN` to that GPIO. The code assumes `HIGH` enables the sensor
    and waits 450 ms before sampling. Do not assume that powering an unknown
    probe directly from a GPIO is safe.
-2. The XIAO does not provide battery voltage to this firmware automatically.
-   `batteryMillivolts` is currently sent as unavailable (`0`/`null`). Battery
-   telemetry requires a correctly sized high-impedance divider from the battery
-   to an unused ADC pin, protection that keeps the ADC below its allowed voltage
-   at maximum cell charge, and a corresponding firmware implementation.
-   Merely defining `BATTERY_SENSE_PIN` does not yet enable measurement.
+2. The XIAO has no on-board battery divider, so `batteryMillivolts` ships as
+   unavailable (`0`/`null`) and you get **no warning before the garden node goes
+   silent**. The firmware side is now implemented: fit a correctly sized
+   high-impedance divider from the battery to an unused ADC pin — sized so the
+   pin stays within its allowed voltage at maximum cell charge — then set
+   `BATTERY_SENSE_PIN` and, if the resistors are unequal,
+   `BATTERY_DIVIDER_NUMERATOR`/`BATTERY_DIVIDER_DENOMINATOR` in
+   [`platformio.ini`](platformio.ini). Readings outside 2500-5500 mV are
+   reported as unavailable rather than as a plausible-looking fiction. Set
+   `devices.battery_low_mv` to enable the low-battery alert.
 
 Use a solar charger/power-path board intended for the panel and battery
 chemistry, a protected cell, and a regulated output compatible with the XIAO.
@@ -125,14 +130,11 @@ boards.
 Install VS Code and the recommended **PlatformIO IDE** extension, then open this
 project directory. Connect both boards with data-capable USB cables.
 
-The checked-in configuration currently names these serial ports:
-
-- Display gateway: `/dev/cu.usbmodem21401`
-- Garden sensor: `/dev/cu.usbmodem21101`
-
-USB port names can change after reconnecting or moving a cable. Use PlatformIO
-Devices or `pio device list`, then update `upload_port` and `monitor_port` in
-[`platformio.ini`](platformio.ini) if needed.
+Serial ports are auto-detected. They were previously pinned to one laptop's
+`/dev/cu.usbmodem…` paths, which broke on any other machine and whenever a cable
+moved. If auto-detection picks the wrong board because both are connected, pass
+the port explicitly: `pio run -e display_receiver -t upload --upload-port
+/dev/cu.usbmodemXXXX`. Use `pio device list` to see the candidates.
 
 In VS Code, choose **Terminal > Run Task** and run:
 
@@ -227,22 +229,27 @@ the IP address printed in the display serial log or shown by the router.
 
 ## Calibrate the moisture percentage
 
-The checked-in endpoints are:
+**Calibration is set from the local dashboard and takes effect immediately. No
+reflash is required.** The gateway derives the percentage from the raw ADC value
+in each packet, so the endpoints live in the gateway's flash rather than in the
+sensor's firmware — which matters, because the sensor spends its life asleep in
+a garden bed and its USB port disappears with it.
 
-```cpp
-constexpr int DRY_RAW = 2513;
-constexpr int WET_RAW = 1300;
-```
+The shipped defaults are `dry = 2513`, `wet = 1300`. `DRY_RAW` was measured from
+this specific probe in air at 3.3 V on 2026-08-09 (stable at 2511-2515 ADC).
+**`WET_RAW` is still a provisional placeholder, not a real measurement**, so
+until you complete step 2 below the percentage is an educated guess and any
+alerting built on it inherits that error.
 
-`DRY_RAW` was measured from this specific sensor in air at 3.3 V on 2026-08-09
-(stable readings of 2511-2515 ADC). `WET_RAW` is still a provisional default,
-not a completed wet calibration. For useful percentages in the garden:
+1. Open <http://soil-monitor.local> and read the **Raw ADC** value with the
+   probe in representative dry soil.
+2. Water that soil fully, let it drain, and read **Raw ADC** again.
+3. Enter both numbers in the **Calibration** card and press **Save**. Dry must
+   exceed wet by at least 200 counts; the gateway rejects anything closer as a
+   likely typo.
 
-1. Observe the LCD's `RAW` value with the probe in representative dry soil.
-2. Observe it again in fully wetted, drained soil of the same type.
-3. Replace `DRY_RAW` and `WET_RAW` in [`src/main.cpp`](src/main.cpp) with those
-   readings.
-4. Rebuild and flash `sensor_transmitter`.
+The display and the cloud upload both switch to the new scale on the next
+packet. Stored history keeps whatever scale was in force when it was recorded.
 
 Do not immerse the connector or electronics above the probe's safe sensing
 area. The calculation maps the dry endpoint to 0% and wet endpoint to 100%, then
@@ -251,6 +258,57 @@ value first: a value at or below the configured wet endpoint will correctly
 clamp to 100%, which usually means the endpoints need calibration or `AOUT` is
 miswired. Confirm `AOUT -> D10/GPIO9`, common ground, and 3.3 V power before
 changing code.
+
+## Unattended operation
+
+The gateway is designed to run for months without anyone looking at it.
+
+**Self-supervision.** A 60-second task watchdog covers the main loop and the
+cloud uploader, so a wedged TLS or Wi-Fi stack reboots instead of quietly
+freezing the display on a stale reading. Separately, six hours with no sensor
+packet triggers a restart on the assumption that the receiver, not the sensor,
+is the broken half.
+
+**Upload buffering.** Readings are spooled to a CRC-checked LittleFS file
+before upload, so an internet outage or a power cut does not punch a hole in the
+history. The buffer holds roughly 24 hours at five-minute sampling; past that
+the oldest reading is dropped. The dashboard's **Cloud upload** card shows the
+current depth and any drops. If the flash filesystem cannot be mounted, the
+gateway falls back to a small RAM queue and says so in the serial log.
+
+**Wireless updates.** Set an OTA password (12+ characters) during Wi-Fi setup to
+enable `pio run -e display_receiver -t upload --upload-port soil-monitor.local`.
+Leave it blank and updates stay USB-only; an unauthenticated OTA listener would
+be remote code execution on your network.
+
+**Database growth.** `roll_up_telemetry()` aggregates raw readings older than
+seven days into hourly buckets and prunes them, keeping the newest row per
+device so `device_state` stays valid. It is scheduled hourly by pg_cron in the
+retention migration. Without it, 30-second sampling produces about 1.05 million
+rows a year.
+
+**Alerts.** `evaluate_alerts()` latches dry-soil, sensor-offline, and low-battery
+conditions in the database and returns only transitions, so the `alert-monitor`
+function delivers each raise and clear exactly once no matter how often it is
+polled. Schedule it every 15 minutes and configure at least one delivery
+channel in the function's environment, or alerts are latched but never sent:
+
+```sql
+select cron.schedule(
+  'soil-alert-evaluate', '*/15 * * * *',
+  $$ select net.http_post(
+       url := 'https://YOUR-PROJECT.supabase.co/functions/v1/alert-monitor',
+       headers := '{"Authorization":"Bearer YOUR_SOIL_CRON_SECRET"}'::jsonb
+     ); $$
+);
+```
+
+**Trust boundary on the LAN.** `soil-monitor.local` serves the local dashboard
+and its `/api/*` routes over plain HTTP with no authentication. State-changing
+routes require a custom header and a matching `Origin`, which blocks drive-by
+requests from a malicious website, but anyone already on your Wi-Fi can read
+readings and change the sampling mode. Treat the local dashboard as trusted-LAN
+only; the Supabase API and the public dashboard are the authenticated path.
 
 ## Deploy the Supabase backend
 
