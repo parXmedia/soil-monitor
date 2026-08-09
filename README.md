@@ -185,12 +185,14 @@ value is present, these three must all be valid:
 - `LOCAL_CLOUD_DEVICE_ID`: 3–64 lowercase letters, digits, `_`, or `-`
 - `LOCAL_CLOUD_INGEST_SECRET`: a random value at least 32 characters long
 
-Values in this header seed only an empty Wi-Fi or cloud NVS namespace. Once a
-namespace has settings, later boots leave it alone, so setup-portal changes are
-not silently overwritten. After successful seeding, blank or remove the private
-header and reflash the display to keep credentials out of later firmware
-artifacts. To intentionally replace existing settings, use the secured setup
-portal or erase that NVS namespace first. Never commit or share the header.
+With `LOCAL_PROVISIONING_VERSION` left at `0`, values seed only an empty Wi-Fi
+or cloud NVS namespace. Once a namespace has settings, later boots leave it
+alone, so setup-portal changes are not silently overwritten. To intentionally
+apply a revised local header once, increment the version; the gateway records
+that version in each namespace and will not reapply it on later boots. After
+successful seeding, blank or remove the private header and reflash the display
+to keep credentials out of later firmware artifacts. Never commit or share the
+header.
 
 ## Local display and dashboard
 
