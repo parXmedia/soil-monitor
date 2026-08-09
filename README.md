@@ -214,14 +214,16 @@ the IP address printed in the display serial log or shown by the router.
 
 ## Calibrate the moisture percentage
 
-The checked-in starting points are:
+The checked-in endpoints are:
 
 ```cpp
-constexpr int DRY_RAW = 3000;
+constexpr int DRY_RAW = 2513;
 constexpr int WET_RAW = 1300;
 ```
 
-They are defaults, not universal sensor calibration. For useful percentages:
+`DRY_RAW` was measured from this specific sensor in air at 3.3 V on 2026-08-09
+(stable readings of 2511-2515 ADC). `WET_RAW` is still a provisional default,
+not a completed wet calibration. For useful percentages in the garden:
 
 1. Observe the LCD's `RAW` value with the probe in representative dry soil.
 2. Observe it again in fully wetted, drained soil of the same type.

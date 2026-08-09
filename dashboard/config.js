@@ -13,8 +13,8 @@ window.SOIL_MONITOR_CONFIG = Object.freeze({
   pollIntervalMs: 15000,
   historyRefreshIntervalMs: 300000,
   requestTimeoutMs: 8000,
-  // Sensor reports every 5 minutes; allow two missed samples before "stale".
-  staleAfterMs: 660000,
+  // Sensor reports every 5 minutes; mark stale 1 minute after a missed update.
+  staleAfterMs: 360000,
 
   // Thresholds are percentages and should match the calibrated sensor.
   thresholds: Object.freeze({

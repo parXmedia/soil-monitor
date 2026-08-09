@@ -84,6 +84,12 @@ class DashboardStaticTests(unittest.TestCase):
             r'return fallback;',
         )
 
+    def test_freshness_is_bounded_and_last_update_is_visible(self):
+        self.assertIn("staleAfterMs: 360000", self.config)
+        self.assertIn('freshness.fresh ? "Up to date" : "Stale data"', self.script)
+        self.assertIn("formatLastUpdate(reading.timestamp)", self.script)
+        self.assertNotIn('freshness.fresh ? "Live"', self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

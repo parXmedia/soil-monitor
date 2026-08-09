@@ -155,7 +155,7 @@ h1 {
   outline: 4px solid transparent;
 }
 
-.connection-pill[data-state="live"] { color: var(--green); border-color: rgba(85, 229, 141, 0.25); }
+.connection-pill[data-state="fresh"] { color: var(--green); border-color: rgba(85, 229, 141, 0.25); }
 .connection-pill[data-state="loading"] .status-dot { animation: pulse 1.3s ease-in-out infinite; }
 .connection-pill[data-state="stale"] { color: var(--yellow); }
 .connection-pill[data-state="offline"],

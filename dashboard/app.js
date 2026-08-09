@@ -5,7 +5,7 @@ const DEFAULT_CONFIG = Object.freeze({
   pollIntervalMs: 15000,
   historyRefreshIntervalMs: 300000,
   requestTimeoutMs: 8000,
-  staleAfterMs: 660000,
+  staleAfterMs: 360000,
   thresholds: Object.freeze({ dryBelow: 25, healthyBelow: 80 })
 });
 
@@ -53,6 +53,7 @@ export function normalizeReading(payload) {
   return Object.freeze({
     deviceId: String(payload.deviceId || "garden-sensor").slice(0, 64),
     timestamp,
+    receivedAt: parseTimestamp(payload.receivedAt),
     moisture,
     rawAdc: finiteNumber(payload.rawAdc),
     millivolts: finiteNumber(payload.millivolts),
@@ -100,6 +101,17 @@ export function computeStats(readings) {
   const delta = values.at(-1) - comparison;
   const trend = delta > 1.5 ? "Rising" : delta < -1.5 ? "Falling" : "Stable";
   return { average, minimum, maximum, delta, trend };
+}
+
+export function readingFreshness(timestamp, staleAfterMs, now = Date.now()) {
+  if (!Number.isFinite(timestamp)) return { fresh: false, clockError: false, ageMs: Infinity };
+  const rawAge = now - timestamp;
+  const clockError = rawAge < -120000;
+  return {
+    fresh: !clockError && rawAge <= staleAfterMs,
+    clockError,
+    ageMs: Math.max(0, rawAge)
+  };
 }
 
 export function validateConfig(candidate, locationLike = globalThis.location) {
@@ -200,7 +212,7 @@ class SoilDashboard {
         });
         this.elements["history-title"].textContent = this.historyHours === 168 ? "Last 7 days" : `Last ${this.historyHours} hours`;
         this.fetchHistory().catch(() => {
-          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Live readings will continue updating.";
+          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Current readings will continue updating.";
         });
       });
     });
@@ -254,11 +266,11 @@ class SoilDashboard {
       await this.fetchCurrent();
       if (!this.history.length || Date.now() - this.lastHistoryFetchedAt >= this.config.historyRefreshIntervalMs) {
         await this.fetchHistory().catch(() => {
-          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Live readings will continue updating.";
+          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Current readings will continue updating.";
         });
       }
       this.failureCount = 0;
-      this.hideNotice();
+      this.updateFreshnessNotice();
     } catch (error) {
       if (error instanceof AuthorizationError) {
         this.clearStoredKey();
@@ -300,14 +312,16 @@ class SoilDashboard {
     const reading = this.current;
     if (!reading) return;
 
-    const age = Date.now() - reading.timestamp;
-    const stale = age > this.config.staleAfterMs;
+    const freshness = readingFreshness(reading.timestamp, this.config.staleAfterMs);
     const condition = classifyMoisture(reading.moisture, this.config.thresholds);
     const roundedMoisture = Math.round(reading.moisture);
     const colors = { dry: "var(--red)", healthy: "var(--green)", wet: "var(--cyan)" };
     const labels = { dry: "Soil is dry", healthy: "Moisture is healthy", wet: "Soil is very wet" };
 
-    this.setConnection(stale ? "stale" : "live", stale ? "Stale data" : "Live");
+    this.setConnection(
+      freshness.fresh ? "fresh" : "stale",
+      freshness.clockError ? "Clock error" : (freshness.fresh ? "Up to date" : "Stale data")
+    );
     this.elements["moisture-number"].textContent = String(roundedMoisture);
     this.elements["moisture-value"].style.color = colors[condition];
     this.elements["condition-icon"].style.color = colors[condition];
@@ -320,7 +334,7 @@ class SoilDashboard {
     this.elements["insight-copy"].textContent = insight.copy;
     const iso = new Date(reading.timestamp).toISOString();
     this.elements["last-reading"].dateTime = iso;
-    this.elements["last-reading"].textContent = formatAge(reading.timestamp);
+    this.elements["last-reading"].textContent = formatLastUpdate(reading.timestamp);
     this.elements["last-reading"].title = new Date(reading.timestamp).toLocaleString();
 
     const signal = reading.signal;
@@ -335,6 +349,22 @@ class SoilDashboard {
     this.elements["raw-value"].textContent = reading.rawAdc === null ? "Raw ADC unavailable" : `Raw ADC ${Math.round(reading.rawAdc)}`;
     this.elements["sequence-value"].textContent = reading.sequence === null ? "--" : Math.round(reading.sequence).toLocaleString();
     this.elements["device-value"].textContent = reading.deviceId;
+  }
+
+  updateFreshnessNotice() {
+    if (!this.current) return;
+    const freshness = readingFreshness(this.current.timestamp, this.config.staleAfterMs);
+    if (freshness.fresh) {
+      this.hideNotice();
+      return;
+    }
+    this.elements["notice"].classList.remove("notice-hidden");
+    this.elements["notice-title"].textContent = freshness.clockError
+      ? "Gateway clock needs attention"
+      : "Sensor update overdue";
+    this.elements["notice-message"].textContent = freshness.clockError
+      ? "The reported sensor time is ahead of this device. The reading is not marked current."
+      : `Last sensor update: ${formatLastUpdate(this.current.timestamp)}.`;
   }
 
   createInsight(condition) {
@@ -496,7 +526,7 @@ class SoilDashboard {
   showOffline(message) {
     this.setConnection("offline", this.current ? "Cached" : "Offline");
     this.elements["notice"].classList.remove("notice-hidden");
-    this.elements["notice-title"].textContent = this.current ? "Live connection interrupted" : "Sensor data unavailable";
+    this.elements["notice-title"].textContent = this.current ? "Cloud connection interrupted" : "Sensor data unavailable";
     this.elements["notice-message"].textContent = this.current ? "Showing the last safely stored reading." : message;
   }
 
@@ -534,6 +564,17 @@ function formatAge(timestamp) {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+}
+
+function formatLastUpdate(timestamp) {
+  const exact = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(new Date(timestamp));
+  return `${exact} · ${formatAge(timestamp)}`;
 }
 
 function formatChartTime(timestamp, hours) {

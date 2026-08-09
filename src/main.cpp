@@ -65,6 +65,7 @@ volatile uint32_t lastPacketAt = 0;
 volatile int8_t latestRssi = -127;
 uint32_t lastRenderedSequence = UINT32_MAX;
 bool lastLinkState = false;
+uint32_t lastFooterRefreshAt = 0;
 
 constexpr size_t HISTORY_CAPACITY = 288; // 24 hours at five-minute intervals.
 struct HistorySample {
@@ -150,11 +151,36 @@ uint16_t linkColor(uint8_t percent) {
   return C_GREEN;
 }
 
-uint32_t linkTimeoutMs(const SoilPacket &packet) {
-  const uint32_t advertised = packet.nextSampleSeconds < 10
-                                  ? 10U
-                                  : packet.nextSampleSeconds;
-  return advertised * 3000UL + 15000UL;
+uint32_t freshnessTimeoutMs(const SoilPacket &packet) {
+  const uint32_t intervalSeconds = packet.nextSampleSeconds < 10
+                                       ? 10U
+                                       : packet.nextSampleSeconds;
+  // A periodic sensor is fresh through its next expected sample plus a small
+  // radio/jitter allowance. Do not imply a continuous connection for several
+  // missed samples.
+  const uint32_t graceSeconds = constrain(intervalSeconds / 5U, 30U, 120U);
+  return (intervalSeconds + graceSeconds) * 1000UL;
+}
+
+String formatSensorAge(uint32_t ageMs) {
+  const uint32_t seconds = ageMs / 1000UL;
+  if (seconds < 60U) return String(seconds) + "s AGO";
+  const uint32_t minutes = seconds / 60U;
+  if (minutes < 60U) {
+    return String(minutes) + "m " + String(seconds % 60U) + "s AGO";
+  }
+  const uint32_t hours = minutes / 60U;
+  return String(hours) + "h " + String(minutes % 60U) + "m AGO";
+}
+
+void drawLastUpdate(bool havePacket, uint32_t ageMs, bool fresh) {
+  display->fillRect(8, 264, 224, 16, C_BLACK);
+  if (!havePacket) {
+    textAt(12, 267, "LAST UPDATE: NEVER", C_YELLOW, 1);
+    return;
+  }
+  textAt(12, 267, "LAST UPDATE: " + formatSensorAge(ageMs),
+         fresh ? C_CYAN : C_RED, 1);
 }
 
 void drawStaticScreen() {
@@ -167,9 +193,6 @@ void drawStaticScreen() {
   display->drawRoundRect(19, 214, 202, 25, 5, C_WHITE);
   textAt(12, 250, "RAW", C_DARK_GREY, 1);
   textAt(112, 250, "SIGNAL", C_DARK_GREY, 1);
-  textAt(12, 267,
-         setupPortalActive ? "SETUP: 192.168.4.1" : "soil-monitor.local",
-         setupPortalActive ? C_YELLOW : C_CYAN, 1);
 }
 
 void drawWaiting() {
@@ -182,9 +205,11 @@ void drawWaiting() {
   display->fillRect(41, 247, 60, 13, C_BLACK);
   display->fillRect(153, 247, 80, 13, C_BLACK);
   textAt(153, 250, "OFFLINE", C_RED, 1);
+  drawLastUpdate(false, 0, false);
 }
 
-void drawReading(const SoilPacket &packet, bool linked, int8_t rssi) {
+void drawReading(const SoilPacket &packet, bool fresh, int8_t rssi,
+                 uint32_t ageMs) {
   const bool sensorSignalValid =
       (packet.statusFlags & SOIL_STATUS_SENSOR_VALID) != 0 &&
       packet.rawAdc >= 200 && packet.rawAdc <= 4000;
@@ -193,7 +218,7 @@ void drawReading(const SoilPacket &packet, bool linked, int8_t rssi) {
                              : C_RED;
 
   display->fillRect(103, 45, 129, 15, C_BLACK);
-  textAt(103, 46, linked ? "CONNECTED" : "OFFLINE", linked ? C_GREEN : C_RED, 1);
+  textAt(103, 46, fresh ? "FRESH" : "STALE", fresh ? C_GREEN : C_RED, 1);
 
   display->fillRect(10, 78, 220, 109, C_BLACK);
   const String percent = sensorSignalValid
@@ -219,8 +244,8 @@ void drawReading(const SoilPacket &packet, bool linked, int8_t rssi) {
   display->fillRect(41, 247, 67, 13, C_BLACK);
   textAt(41, 250, String(packet.rawAdc), C_WHITE, 1);
   display->fillRect(153, 247, 80, 13, C_BLACK);
-  if (!linked) {
-    textAt(153, 250, "LOST", C_RED, 1);
+  if (!fresh) {
+    textAt(153, 250, "STALE", C_RED, 1);
   } else if (rssi <= -127) {
     textAt(153, 250, "LINKING", C_YELLOW, 1);
   } else {
@@ -228,6 +253,7 @@ void drawReading(const SoilPacket &packet, bool linked, int8_t rssi) {
     const String signal = String(strength) + "% " + String(rssi);
     textAt(153, 250, signal, linkColor(strength), 1);
   }
+  drawLastUpdate(true, ageMs, fresh);
 }
 
 void onPromiscuousPacket(void *buffer, wifi_promiscuous_pkt_type_t type) {
@@ -368,7 +394,7 @@ void handleApiData() {
   portEXIT_CRITICAL(&packetMux);
 
   const uint32_t age = havePacket ? millis() - receivedAt : UINT32_MAX;
-  const bool linked = havePacket && age < linkTimeoutMs(packet);
+  const bool fresh = havePacket && age < freshnessTimeoutMs(packet);
   const bool valid = havePacket &&
                      (packet.statusFlags & SOIL_STATUS_SENSOR_VALID) != 0 &&
                      packet.rawAdc >= 200 && packet.rawAdc <= 4000;
@@ -385,7 +411,8 @@ void handleApiData() {
 
   String json;
   json.reserve(620);
-  json += "{\"linked\":" + String(linked ? "true" : "false");
+  json += "{\"linked\":" + String(fresh ? "true" : "false");
+  json += ",\"fresh\":" + String(fresh ? "true" : "false");
   json += ",\"valid\":" + String(valid ? "true" : "false");
   json += ",\"moisture\":" + String(packet.moisturePercent);
   json += ",\"condition\":\"" + String(moistureLabel(packet.moisturePercent)) + "\"";
@@ -927,15 +954,15 @@ void loop() {
   rssi = latestRssi;
   portEXIT_CRITICAL(&packetMux);
 
-  const bool linked = havePacket &&
-                      (millis() - receivedAt < linkTimeoutMs(packet));
+  const uint32_t age = havePacket ? millis() - receivedAt : UINT32_MAX;
+  const bool fresh = havePacket && age < freshnessTimeoutMs(packet);
   if (havePacket &&
-      (packet.sequence != lastRenderedSequence || linked != lastLinkState)) {
+      (packet.sequence != lastRenderedSequence || fresh != lastLinkState)) {
     const bool isNewReading = packet.sequence != lastRenderedSequence;
-    drawReading(packet, linked, rssi);
+    drawReading(packet, fresh, rssi, age);
     if (isNewReading) queueCloudUpload(packet, rssi);
     lastRenderedSequence = packet.sequence;
-    lastLinkState = linked;
+    lastLinkState = fresh;
     Serial.printf("Moisture %u%% | raw %u | %u mV | RSSI %d dBm | packet %lu\n",
                   packet.moisturePercent, packet.rawAdc, packet.millivolts,
                   rssi,
@@ -947,11 +974,15 @@ void loop() {
       lastHistoryAt = millis();
     }
   }
+  if (millis() - lastFooterRefreshAt >= 1000) {
+    lastFooterRefreshAt = millis();
+    drawLastUpdate(havePacket, age, fresh);
+  }
   if (millis() - lastStatusLogAt >= 5000) {
     lastStatusLogAt = millis();
     Serial.printf("Gateway mode=%s channel=%u link=%s packets=%lu cloud=%s http=%d address=%s\n",
                   setupPortalActive ? "SETUP" : "HOME", gatewayChannel,
-                  linked ? "LIVE" : "WAITING",
+                  fresh ? "FRESH" : "STALE",
                   static_cast<unsigned long>(receivedPacketCount),
                   !cloudConfigured()
                       ? "NOT_SET"
@@ -987,9 +1018,9 @@ namespace {
 #define MEASUREMENT_INTERVAL_SECONDS 300
 #endif
 
-// Adjust these after placing the sensor in completely dry soil and in water.
-// Most v1.2 capacitive sensors powered from 3.3 V fall near these values.
-constexpr int DRY_RAW = 3000;
+// Dry-in-air endpoint measured from this sensor at 3.3 V (2511-2515 ADC).
+// Replace WET_RAW after measuring fully wetted, drained soil of the target type.
+constexpr int DRY_RAW = 2513;
 constexpr int WET_RAW = 1300;
 constexpr uint32_t RETAINED_STATE_MAGIC = 0x53524E32;
 constexpr uint32_t SENSOR_SETTLE_MS = 450;

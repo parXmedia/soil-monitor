@@ -46,8 +46,9 @@ Only `timestamp` and `moisture` are required. Battery fields are optional until
 battery-voltage sensing is added to the garden board.
 
 The garden transmitter is expected to send one sample every five minutes. The
-dashboard polls the cloud API every 15 seconds for low-latency delivery but does
-not label a reading stale until it is 11 minutes old (two missed sample windows).
+dashboard polls the cloud API every 15 seconds for low-latency delivery. A
+reading is labeled fresh through the five-minute sampling interval plus one
+minute of radio/upload grace; after six minutes it is explicitly stale.
 
 `GET {apiBaseUrl}/v1/history?hours=24`
 
