@@ -85,6 +85,8 @@ class DashboardStaticTests(unittest.TestCase):
         )
 
     def test_freshness_is_bounded_and_last_update_is_visible(self):
+        self.assertIn("pollIntervalMs: 2000", self.config)
+        self.assertIn("MIN_POLL_INTERVAL_MS = 2000", self.script)
         self.assertIn("staleAfterMs: 360000", self.config)
         self.assertIn('freshness.fresh ? "Up to date" : "Stale data"', self.script)
         self.assertIn("formatLastUpdate(reading.timestamp)", self.script)

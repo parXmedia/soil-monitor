@@ -10,7 +10,7 @@ window.SOIL_MONITOR_CONFIG = Object.freeze({
 
   currentPath: "/v1/current",
   historyPath: "/v1/history",
-  pollIntervalMs: 15000,
+  pollIntervalMs: 2000,
   historyRefreshIntervalMs: 300000,
   requestTimeoutMs: 8000,
   // Sensor reports every 5 minutes; mark stale 1 minute after a missed update.

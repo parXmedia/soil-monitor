@@ -2,14 +2,14 @@ const DEFAULT_CONFIG = Object.freeze({
   apiBaseUrl: "",
   currentPath: "/v1/current",
   historyPath: "/v1/history",
-  pollIntervalMs: 15000,
+  pollIntervalMs: 2000,
   historyRefreshIntervalMs: 300000,
   requestTimeoutMs: 8000,
   staleAfterMs: 360000,
   thresholds: Object.freeze({ dryBelow: 25, healthyBelow: 80 })
 });
 
-const MIN_POLL_INTERVAL_MS = 5000;
+const MIN_POLL_INTERVAL_MS = 2000;
 const MAX_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const CACHE_KEY = "soil-monitor-cache-v1";
 const ACCESS_KEY = "soil-monitor-read-token-v1";
