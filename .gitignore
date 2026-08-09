@@ -1,0 +1,13 @@
+.pio/
+.DS_Store
+__pycache__/
+*.py[cod]
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+lib/GFX_Library_for_Arduino/
+include/radio_secrets.h
+include/cloud_secrets.h
+include/local_provisioning.h
+.env
+.env.*
+!.env.example
