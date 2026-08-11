@@ -152,6 +152,9 @@ class HardeningRegressionTests(unittest.TestCase):
         cls.alert_repair_migration = (
             PROJECT_ROOT / "supabase" / "migrations" / "20260810180000_repair_alert_evaluation.sql"
         ).read_text(encoding="utf-8")
+        cls.rollup_repair_migration = (
+            PROJECT_ROOT / "supabase" / "migrations" / "20260810190000_repair_rollup_merge.sql"
+        ).read_text(encoding="utf-8")
 
     def test_history_coverage_is_reported_to_the_reader(self):
         # The old API silently truncated a 7-day request to the newest rows.
@@ -236,6 +239,33 @@ class HardeningRegressionTests(unittest.TestCase):
             self.alert_migration.count("where s.latest_telemetry_id = t.id"),
             2,
         )
+
+    def test_every_edit_to_the_applied_migration_ships_a_repair(self):
+        # 20260809120000 was released before this fix, so editing it in place
+        # only reaches projects that have not run it yet. Both functions it
+        # redefines need a follow-up migration or the fix never lands.
+        for function in ("evaluate_alerts", "roll_up_telemetry"):
+            self.assertIn(
+                f"create or replace function public.{function}",
+                self.alert_repair_migration + self.rollup_repair_migration,
+                f"{function} was changed in an already-applied migration "
+                "without a repair migration",
+            )
+
+    def test_rollup_repair_keeps_the_retained_latest_row_out_of_the_aggregate(self):
+        # Without the guard the DELETE spares the row device_state points at
+        # while the aggregate keeps re-consuming it, so an offline device's
+        # bucket was rewritten from a single sample on every hourly run.
+        self.assertIn(
+            "and not exists (\n        select 1 from public.device_state s "
+            "where s.latest_telemetry_id = t.id\n      )",
+            self.rollup_repair_migration,
+        )
+        self.assertIn(
+            "sample_count = target.sample_count + excluded.sample_count",
+            self.rollup_repair_migration,
+        )
+        self.assertNotIn("sample_count = excluded.sample_count", self.rollup_repair_migration)
 
     def test_vendored_supabase_bundle_matches_audited_npm_artifact(self):
         bundle = (ROOT / "vendor" / "supabase-2.105.0.js").read_bytes()
