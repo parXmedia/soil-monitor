@@ -1,14 +1,25 @@
 project_id = "lafvin-wireless-soil-monitor"
 
-# This function performs its own HMAC authentication for writes and a separate
-# read-token check for reads. Supabase JWT verification is therefore disabled at
-# the edge gateway, while database tables remain inaccessible to public roles.
+# Writes use the gateway's HMAC credential. Reads use a Supabase Auth user JWT
+# and verify device ownership inside the function. The mixed authentication
+# modes require the platform JWT gate to stay disabled for this function.
 [functions.soil-api]
 verify_jwt = false
+
+[auth]
+site_url = "https://parxmedia.github.io/soil-monitor/"
+additional_redirect_urls = ["https://parxmedia.github.io/soil-monitor/"]
+
+[auth.passkey]
+enabled = true
+
+[auth.webauthn]
+rp_display_name = "Garden Soil Monitor"
+rp_id = "parxmedia.github.io"
+rp_origins = ["https://parxmedia.github.io"]
 
 # Called by the scheduler, not by a signed-in user. It authenticates with the
 # shared SOIL_CRON_SECRET in the Authorization header and refuses everything
 # else, so the platform's JWT gate would only get in the way.
 [functions.alert-monitor]
 verify_jwt = false
-

@@ -9,6 +9,7 @@ constexpr int LCD_RST = 3;
 constexpr int LCD_BL = 13;
 constexpr int LCD_WIDTH = 240;
 constexpr int LCD_HEIGHT = 280;
+constexpr int LCD_SAFE_MARGIN = 20;
 
 constexpr int BOOT_BUTTON = 0;
-
+constexpr int RGB_LED_PIN = 48;

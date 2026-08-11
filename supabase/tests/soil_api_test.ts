@@ -1,7 +1,7 @@
 import {
   ApiError,
   authenticateIngest,
-  authorizeRead,
+  bearerAccessToken,
   canonicalIngestMessage,
   clientKey,
   decodeJsonBody,
@@ -126,6 +126,11 @@ Deno.test("telemetry validator enforces ranges and canonicalizes time", async ()
     espnow_rssi_dbm: -72,
     battery_mv: 4050,
     battery_percent: 82,
+    current_ma: 96,
+    power_mw: 389,
+    power_measured: true,
+    sampling_mode: "live",
+    sensor_firmware_build: 196609,
     uptime_seconds: 600,
     sensor_firmware: "2.0.0",
     gateway_firmware: "2.0.0",
@@ -133,9 +138,25 @@ Deno.test("telemetry validator enforces ranges and canonicalizes time", async ()
   assert(reading.sampled_at === "2026-08-09T18:25:43.000Z");
   assert(reading.moisture_pct === 42.6);
   assert(reading.battery_mv === 4050);
+  assert(reading.power_mw === 389);
+  assert(reading.sampling_mode === "live");
+
+  const sleeping = validateTelemetry({
+    ...reading,
+    current_ma: null,
+    power_mw: null,
+    power_measured: null,
+    sampling_mode: "low_power",
+  }, now);
+  assert(sleeping.current_ma === null);
+  assert(sleeping.power_measured === null);
 
   await assertRejectsCode(
     () => validateTelemetry({ ...reading, moisture_pct: 101 }, now),
+    "invalid_reading",
+  );
+  await assertRejectsCode(
+    () => validateTelemetry({ ...reading, power_mw: null }, now),
     "invalid_reading",
   );
   await assertRejectsCode(
@@ -148,14 +169,11 @@ Deno.test("telemetry validator enforces ranges and canonicalizes time", async ()
   );
 });
 
-Deno.test("read token, history range, and RSSI mapping are bounded", async () => {
-  const token = "read-token-test-only-0123456789-abcdefghijklmnopqrstuvwxyz";
-  await authorizeRead(new Headers({ Authorization: `Bearer ${token}` }), token);
+Deno.test("user JWT, history range, and RSSI mapping are bounded", async () => {
+  const token = "header.payload.signature";
+  assert(bearerAccessToken(new Headers({ Authorization: `Bearer ${token}` })) === token);
   await assertRejectsCode(
-    () => authorizeRead(
-      new Headers({ Authorization: "Bearer wrong-token-that-is-still-long-enough-123456" }),
-      token,
-    ),
+    () => Promise.resolve(bearerAccessToken(new Headers({ Authorization: "Bearer shared-key" }))),
     "unauthorized",
   );
   assert(parseHistoryHours(null) === 24);
@@ -185,6 +203,11 @@ Deno.test("JSON size limit and dashboard response contract stay stable", async (
     espnow_rssi_dbm: -72,
     battery_mv: 4050,
     battery_percent: 82,
+    current_ma: 96,
+    power_mw: 389,
+    power_measured: true,
+    sampling_mode: "live",
+    sensor_firmware_build: 196609,
     uptime_seconds: 600,
     sensor_firmware: "2.0.0",
     gateway_firmware: "2.0.0",
@@ -194,6 +217,8 @@ Deno.test("JSON size limit and dashboard response contract stay stable", async (
   assert(reading.moisture === 42.6);
   assert(reading.millivolts === 1760);
   assert(reading.batteryVoltage === 4.05);
+  assert(reading.powerMilliwatts === 389);
+  assert(reading.powerMeasured === true);
 });
 
 Deno.test("history buckets keep every supported range bounded", () => {

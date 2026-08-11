@@ -13,9 +13,10 @@
       content="Read-only garden soil moisture and wireless telemetry with explicit freshness status."
     >
     <title>Garden Soil Monitor</title>
-    <link rel="stylesheet" href="./styles.css">
-    <script src="./config.js" defer></script>
-    <script type="module" src="./app.js"></script>
+    <link rel="stylesheet" href="./styles.css?v=passkeys-1">
+    <script src="./vendor/supabase-2.105.0.js?v=passkeys-1" defer></script>
+    <script src="./config.js?v=passkeys-1" defer></script>
+    <script type="module" src="./app.js?v=passkeys-1"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to sensor data</a>
@@ -38,7 +39,7 @@
         </div>
 
         <div class="header-actions">
-          <button class="forget-button" id="forget-key-button" type="button" hidden>Forget key</button>
+          <button class="forget-button" id="manage-passkeys-button" type="button" hidden>Passkeys</button>
           <div class="connection-pill" id="connection-pill" data-state="loading" role="status" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="connection-label">Connecting</span>
@@ -52,22 +53,42 @@
         </div>
         <div class="access-copy">
           <div class="section-label">Private garden data</div>
-          <h2 id="access-title">Enter your read-only access key</h2>
-          <p>The key stays in this browser tab and is never saved in the website files.</p>
-          <label for="access-key">Access key</label>
-          <div class="key-row">
-            <input
-              id="access-key"
-              type="password"
-              autocomplete="off"
-              autocapitalize="none"
-              spellcheck="false"
-              maxlength="2048"
-              placeholder="Paste access key"
-            >
-            <button id="unlock-button" type="button">View live data</button>
-          </div>
+          <h2 id="access-title">Sign in with your passkey</h2>
+          <p>Use Face ID or Touch ID. No dashboard password or shared access key is required.</p>
+          <button class="primary-auth-button" id="passkey-sign-in-button" type="button">Continue with passkey</button>
+
+          <details class="setup-details" id="setup-details">
+            <summary>First-time setup or recovery</summary>
+            <p>Use the confirmed owner email once, then add a passkey from this page.</p>
+            <label for="setup-email">Owner email</label>
+            <div class="key-row">
+              <input
+                id="setup-email"
+                type="email"
+                autocomplete="email"
+                autocapitalize="none"
+                spellcheck="false"
+                maxlength="254"
+                placeholder="you@example.com"
+              >
+              <button id="send-link-button" type="button">Email sign-in link</button>
+            </div>
+          </details>
           <p class="access-error" id="access-error" role="alert" hidden></p>
+        </div>
+      </section>
+
+      <section class="account-panel panel" id="account-panel" aria-labelledby="account-title" hidden>
+        <div>
+          <div class="section-label">Passkey access</div>
+          <h2 id="account-title">Your secure devices</h2>
+          <p id="account-email">Signed in</p>
+          <ul id="passkey-list"><li>Checking registered passkeys…</li></ul>
+          <p class="account-message" id="account-message" role="status" hidden></p>
+        </div>
+        <div class="account-actions">
+          <button id="add-passkey-button" type="button">Add a passkey</button>
+          <button class="secondary-button" id="sign-out-button" type="button">Sign out</button>
         </div>
       </section>
 
@@ -147,6 +168,23 @@
             <strong class="metric-value" id="sequence-value">--</strong>
             <span class="metric-detail" id="device-value">Garden sensor</span>
           </article>
+
+          <article class="metric panel">
+            <div class="metric-topline">
+              <span class="section-label">Live power draw</span>
+            </div>
+            <strong class="metric-value" id="power-value">-- mW</strong>
+            <span class="metric-detail" id="current-value">Available in Live mode</span>
+            <span class="metric-detail" id="power-source">Measurement status unavailable</span>
+          </article>
+
+          <article class="metric panel">
+            <div class="metric-topline">
+              <span class="section-label">Sensor mode</span>
+            </div>
+            <strong class="metric-value" id="mode-value">--</strong>
+            <span class="metric-detail" id="firmware-value">Firmware unavailable</span>
+          </article>
         </section>
 
         <section class="history panel" aria-labelledby="history-title">
@@ -180,7 +218,7 @@
 
       <footer>
         <span>Read-only dashboard · no account or location data exposed</span>
-        <span id="refresh-label">Updates every 15 seconds</span>
+        <span id="refresh-label">Updates every 2 seconds</span>
       </footer>
     </div>
   </body>

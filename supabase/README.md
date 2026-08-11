@@ -17,11 +17,11 @@ https://PROJECT_REF.supabase.co/functions/v1/soil-api
 - `GET /v1/current` returns the newest reading.
 - `GET /v1/history?hours=6|24|168` returns at most 2,500 chronological readings.
 
-Both GET routes require `Authorization: Bearer <SOIL_READ_TOKEN>`. This protects
-the endpoint from casual public access, but a token embedded in a static GitHub
-Pages application is visible to every visitor. For genuinely private readings,
-replace this shared read token with Supabase Auth and owner-scoped RLS before
-publishing. Never place the service-role key or ingest secret in browser code.
+Both GET routes require a short-lived Supabase Auth user JWT in the
+`Authorization` header. The function validates the JWT with Supabase Auth and
+requires its user ID to match the device's `owner_id`. Normal dashboard sign-in
+uses a passkey; there is no shared read token. Never place the service-role key
+or ingest secret in browser code.
 
 ## HMAC ingest contract
 
@@ -29,7 +29,7 @@ The gateway sends these headers:
 
 ```text
 Content-Type: application/json
-X-Device-Id: garden-01
+X-Device-Id: garden-sensor-1
 X-Boot-Id: <UUID generated on boot>
 X-Sequence: <unsigned 32-bit integer>
 X-Timestamp: <current Unix time in seconds>
@@ -60,11 +60,19 @@ Example JSON body:
   "espnow_rssi_dbm": -72,
   "battery_mv": 4050,
   "battery_percent": 82,
+  "current_ma": 96,
+  "power_mw": 389,
+  "power_measured": true,
+  "sampling_mode": "live",
+  "sensor_firmware_build": 196609,
   "uptime_seconds": 600,
-  "sensor_firmware": "2.0.0",
-  "gateway_firmware": "2.0.0"
+  "sensor_firmware": "3.0.1",
+  "gateway_firmware": "3.0.0"
 }
 ```
+
+Power fields are nullable outside Live mode. `power_measured: false` identifies
+the configured estimate used when no current-sense circuit is fitted.
 
 The request timestamp must be within the configured 30–900 second window. A
 sample can be up to 30 days old, allowing an offline gateway queue to backfill
@@ -86,22 +94,36 @@ this `supabase` directory).
    supabase db push
    ```
 
-2. In the SQL editor, provision the logical device. `owner_id` is optional for
-   the shared read-token dashboard; populate it before adding owner-scoped Auth
-   policies in a future multi-user deployment:
+   Apply migrations before flashing gateway v3; otherwise PostgREST does not
+   yet have the new live-power columns and will reject v3 telemetry inserts.
+
+2. In Authentication → Users, create the owner's email account and mark the
+   email confirmed. In the SQL editor, provision the logical device and assign
+   it to that Auth user:
 
    ```sql
-   insert into public.devices (device_id, display_name)
-   values ('garden-01', 'Garden soil sensor');
+   insert into public.devices (device_id, display_name, owner_id)
+   select 'garden-sensor-1', 'Garden soil sensor', id
+   from auth.users
+   where lower(email) = lower('YOU@EXAMPLE.COM');
    ```
 
-3. Generate two different 32-byte random values locally. Store the ingest value
-   only on the indoor gateway and in `SOIL_INGEST_SECRET`. Store the read value
-   in `SOIL_READ_TOKEN`. Set function secrets interactively or from an ignored
-   local environment file:
+   For an existing device, use:
+
+   ```sql
+   update public.devices
+   set owner_id = (
+     select id from auth.users
+     where lower(email) = lower('YOU@EXAMPLE.COM')
+   )
+   where device_id = 'garden-sensor-1';
+   ```
+
+3. Generate a 32-byte random ingest value. Store it only on the indoor gateway
+   and in `SOIL_INGEST_SECRET`. Set function secrets interactively or from an
+   ignored local environment file:
 
    ```sh
-   openssl rand -base64 32
    openssl rand -base64 32
    supabase secrets set --env-file supabase/.env.local
    ```
@@ -117,9 +139,30 @@ this `supabase` directory).
    supabase functions deploy soil-api --no-verify-jwt
    ```
 
-5. Configure the dashboard API base URL with the function URL. If keeping the
-   shared read-token design, the dashboard must send it as a Bearer token; treat
-   it as a revocable read-only access code, never as a true secret.
+5. Configure Supabase Auth before publishing the dashboard:
+
+   - Authentication → URL Configuration:
+     - Site URL: `https://parxmedia.github.io/soil-monitor/`
+     - Redirect URL: `https://parxmedia.github.io/soil-monitor/`
+   - Authentication → Passkeys:
+     - Enable passkeys.
+     - RP display name: `Garden Soil Monitor`
+     - RP ID: `parxmedia.github.io`
+     - RP origins: `https://parxmedia.github.io`
+
+   The RP ID has no scheme or path. Do not change it after enrollment because
+   existing passkeys are cryptographically bound to it. Supabase currently
+   labels this feature experimental.
+
+6. Copy the project's public `sb_publishable_...` key from Settings → API into
+   `dashboard/config.js`, along with the project and function URLs. A publishable
+   key is safe in client code; a secret or service-role key is not.
+
+7. Open the published dashboard on the Mac, request the confirmed owner's email
+   link under **First-time setup or recovery**, then open **Passkeys** and choose
+   **Add a passkey**. With Passwords & Keychain sync enabled on the same Apple
+   Account, that passkey should be available on the iPhone as well. If it is not,
+   repeat the email-link enrollment once on the iPhone to add a second passkey.
 
 ## Local validation
 

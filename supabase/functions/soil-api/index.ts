@@ -1,30 +1,33 @@
 import {
   ApiError,
   authenticateIngest,
-  authorizeRead,
+  bearerAccessToken,
   clientKey,
   decodeJsonBody,
   historyBucketSeconds,
   MAX_BODY_BYTES,
   parseHistoryHours,
   RateLimiter,
+  sha256Hex,
   toDashboardReading,
   toDashboardSeriesPoint,
   validateTelemetry,
 } from "./soil_api.ts";
 import type { SeriesPoint, StoredTelemetry } from "./soil_api.ts";
 
-// Generous enough that the dashboard's 15-second poll and the gateway's
+// Generous enough that the dashboard's 2-second poll and the gateway's
 // per-sample upload never notice, tight enough to blunt a scripted flood.
 const readLimiter = new RateLimiter(120, 60_000);
 const ingestLimiter = new RateLimiter(60, 60_000);
+const authCache = new Map<string, { userId: string; expiresAt: number }>();
+const authEncoder = new TextEncoder();
+const AUTH_CACHE_MS = 30_000;
 
 interface RuntimeConfig {
   supabaseUrl: string;
   serviceRoleKey: string;
   deviceId: string;
   ingestSecret: string;
-  readToken: string;
   allowedOrigin: string;
   maxClockSkewSeconds: number;
 }
@@ -63,9 +66,8 @@ function loadConfig(): RuntimeConfig {
   }
 
   const ingestSecret = requiredEnvironment("SOIL_INGEST_SECRET");
-  const readToken = requiredEnvironment("SOIL_READ_TOKEN");
-  if (ingestSecret.length < 32 || readToken.length < 32 || ingestSecret === readToken) {
-    throw new Error("Ingest and read credentials must be distinct and at least 32 characters each");
+  if (ingestSecret.length < 32) {
+    throw new Error("SOIL_INGEST_SECRET must be at least 32 characters");
   }
 
   return {
@@ -73,7 +75,6 @@ function loadConfig(): RuntimeConfig {
     serviceRoleKey: requiredEnvironment("SUPABASE_SERVICE_ROLE_KEY"),
     deviceId,
     ingestSecret,
-    readToken,
     allowedOrigin: allowedUrl.origin,
     maxClockSkewSeconds,
   };
@@ -179,6 +180,52 @@ async function deviceIsEnabled(config: RuntimeConfig): Promise<boolean> {
   return rows.length === 1 && rows[0].enabled === true;
 }
 
+async function authenticatedUserId(headers: Headers, config: RuntimeConfig): Promise<string> {
+  const token = bearerAccessToken(headers);
+  const cacheKey = await sha256Hex(authEncoder.encode(token));
+  const now = Date.now();
+  const cached = authCache.get(cacheKey);
+  if (cached && now < cached.expiresAt) return cached.userId;
+
+  const url = new URL("/auth/v1/user", config.supabaseUrl);
+  const response = await fetch(url, {
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) throw new ApiError(401, "unauthorized", "Authentication failed");
+  const user = await response.json() as { id?: unknown };
+  const userIdPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (typeof user.id !== "string" || !userIdPattern.test(user.id)) {
+    throw new ApiError(401, "unauthorized", "Authentication failed");
+  }
+
+  if (authCache.size > 1000) {
+    for (const [key, entry] of authCache) {
+      if (now >= entry.expiresAt) authCache.delete(key);
+    }
+  }
+  authCache.set(cacheKey, { userId: user.id, expiresAt: now + AUTH_CACHE_MS });
+  return user.id;
+}
+
+async function authorizeDashboardRead(headers: Headers, config: RuntimeConfig): Promise<void> {
+  const userId = await authenticatedUserId(headers, config);
+  const url = restUrl(config, "devices", {
+    select: "owner_id,enabled",
+    device_id: `eq.${config.deviceId}`,
+    limit: "1",
+  });
+  const response = await fetch(url, { headers: databaseHeaders(config) });
+  if (!response.ok) throw new Error(`device authorization lookup failed (${response.status})`);
+  const rows = await response.json() as Array<{ owner_id: string | null; enabled: boolean }>;
+  if (rows.length !== 1 || rows[0].enabled !== true || rows[0].owner_id !== userId) {
+    throw new ApiError(403, "not_device_owner", "This account cannot read the device");
+  }
+}
+
 async function findDuplicate(
   config: RuntimeConfig,
   bootId: string,
@@ -260,7 +307,7 @@ async function currentTelemetry(config: RuntimeConfig): Promise<StoredTelemetry 
 async function historySeries(
   config: RuntimeConfig,
   hours: number,
-): Promise<SeriesPoint[]> {
+): Promise<SeriesPoint[] | null> {
   const bucketSeconds = historyBucketSeconds(hours);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   const url = new URL("/rest/v1/rpc/telemetry_series", config.supabaseUrl);
@@ -273,8 +320,31 @@ async function historySeries(
       bucket_seconds: bucketSeconds,
     }),
   });
+  // The current-reading route does not depend on telemetry_series, so it can
+  // keep working when the Edge Function is deployed before its companion
+  // database migration. Treat PostgREST's missing-function response as a
+  // rolling-deploy state and fall back to a bounded raw query below.
+  if (response.status === 404) return null;
   if (!response.ok) throw new Error(`history lookup failed (${response.status})`);
   return await response.json() as SeriesPoint[];
+}
+
+async function rawHistoryTelemetry(
+  config: RuntimeConfig,
+  hours: number,
+): Promise<StoredTelemetry[]> {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const url = restUrl(config, "telemetry", {
+    select: "*",
+    device_id: `eq.${config.deviceId}`,
+    sampled_at: `gte.${since}`,
+    order: "sampled_at.desc,id.desc",
+    limit: "2000",
+  });
+  const response = await fetch(url, { headers: databaseHeaders(config) });
+  if (!response.ok) throw new Error(`raw history lookup failed (${response.status})`);
+  const newestFirst = await response.json() as StoredTelemetry[];
+  return newestFirst.reverse();
 }
 
 async function handleRequest(request: Request, config: RuntimeConfig): Promise<Response> {
@@ -349,20 +419,23 @@ async function handleRequest(request: Request, config: RuntimeConfig): Promise<R
   }
 
   if (request.method === "GET" && route === "/v1/current") {
-    await authorizeRead(request.headers, config.readToken);
+    await authorizeDashboardRead(request.headers, config);
     const row = await currentTelemetry(config);
     if (!row) throw new ApiError(404, "no_readings", "No readings are available");
     return jsonResponse(200, toDashboardReading(row), origin, config);
   }
 
   if (request.method === "GET" && route === "/v1/history") {
-    await authorizeRead(request.headers, config.readToken);
+    await authorizeDashboardRead(request.headers, config);
     const hours = parseHistoryHours(url.searchParams.get("hours"));
     const points = await historySeries(config, hours);
-    const readings = points.map(toDashboardSeriesPoint);
+    const usingRawFallback = points === null;
+    const readings = usingRawFallback
+      ? (await rawHistoryTelemetry(config, hours)).map(toDashboardReading)
+      : points.map(toDashboardSeriesPoint);
     return jsonResponse(200, {
       hours,
-      bucketSeconds: historyBucketSeconds(hours),
+      bucketSeconds: usingRawFallback ? null : historyBucketSeconds(hours),
       // Stated explicitly so the dashboard can show the span it actually has
       // rather than implying the full window was returned.
       coveredFrom: readings.at(0)?.timestamp ?? null,

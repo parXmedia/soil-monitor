@@ -40,6 +40,11 @@ export interface ValidTelemetry {
   espnow_rssi_dbm: number;
   battery_mv: number | null;
   battery_percent: number | null;
+  current_ma: number | null;
+  power_mw: number | null;
+  power_measured: boolean | null;
+  sampling_mode: "live" | "fast" | "low_power" | null;
+  sensor_firmware_build: number | null;
   uptime_seconds: number | null;
   sensor_firmware: string | null;
   gateway_firmware: string | null;
@@ -230,6 +235,22 @@ function optionalVersion(value: unknown, name: string): string | null {
   return value;
 }
 
+function optionalBoolean(value: unknown, name: string): boolean | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "boolean") {
+    throw new ApiError(422, "invalid_reading", `${name} must be a boolean`);
+  }
+  return value;
+}
+
+function optionalSamplingMode(value: unknown): "live" | "fast" | "low_power" | null {
+  if (value === undefined || value === null) return null;
+  if (value !== "live" && value !== "fast" && value !== "low_power") {
+    throw new ApiError(422, "invalid_reading", "sampling_mode is not supported");
+  }
+  return value;
+}
+
 export function decodeJsonBody(body: Uint8Array): unknown {
   if (body.byteLength === 0) throw new ApiError(400, "empty_body", "JSON body is required");
   if (body.byteLength > MAX_BODY_BYTES) {
@@ -250,7 +271,8 @@ export function validateTelemetry(value: unknown, nowMilliseconds: number): Vali
   const allowedKeys = new Set([
     "schema", "sampled_at", "moisture_pct", "raw_adc", "sensor_mv",
     "espnow_rssi_dbm", "battery_mv", "battery_percent", "uptime_seconds",
-    "sensor_firmware", "gateway_firmware",
+    "sensor_firmware", "gateway_firmware", "current_ma", "power_mw",
+    "power_measured", "sampling_mode", "sensor_firmware_build",
   ]);
   if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
     throw new ApiError(422, "invalid_reading", "Telemetry contains an unknown field");
@@ -282,6 +304,14 @@ export function validateTelemetry(value: unknown, nowMilliseconds: number): Vali
     throw new ApiError(422, "invalid_reading", "sampled_at is outside the accepted range");
   }
 
+  const currentMa = optionalInteger(input.current_ma, "current_ma", 0, 20_000);
+  const powerMw = optionalInteger(input.power_mw, "power_mw", 0, 100_000);
+  const powerMeasured = optionalBoolean(input.power_measured, "power_measured");
+  if ((currentMa === null) !== (powerMw === null) ||
+      (powerMeasured !== null && currentMa === null)) {
+    throw new ApiError(422, "invalid_reading", "power telemetry fields are inconsistent");
+  }
+
   return {
     schema: 1,
     sampled_at: canonicalSampledAt,
@@ -291,6 +321,13 @@ export function validateTelemetry(value: unknown, nowMilliseconds: number): Vali
     espnow_rssi_dbm: integer(input.espnow_rssi_dbm, "espnow_rssi_dbm", -127, 0),
     battery_mv: optionalInteger(input.battery_mv, "battery_mv", 2500, 5500),
     battery_percent: optionalNumber(input.battery_percent, "battery_percent", 0, 100),
+    current_ma: currentMa,
+    power_mw: powerMw,
+    power_measured: powerMeasured,
+    sampling_mode: optionalSamplingMode(input.sampling_mode),
+    sensor_firmware_build: optionalInteger(
+      input.sensor_firmware_build, "sensor_firmware_build", 1, MAX_SEQUENCE,
+    ),
     uptime_seconds: optionalInteger(input.uptime_seconds, "uptime_seconds", 0, MAX_SEQUENCE),
     sensor_firmware: optionalVersion(input.sensor_firmware, "sensor_firmware"),
     gateway_firmware: optionalVersion(input.gateway_firmware, "gateway_firmware"),
@@ -306,19 +343,13 @@ export function parseHistoryHours(value: string | null): number {
   return hours;
 }
 
-export async function authorizeRead(headers: Headers, expectedToken: string): Promise<void> {
+export function bearerAccessToken(headers: Headers): string {
   const authorization = headers.get("authorization") ?? "";
-  const match = /^Bearer ([!-~]{32,512})$/.exec(authorization);
-  const [suppliedDigest, expectedDigest] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(match?.[1] ?? "")),
-    crypto.subtle.digest("SHA-256", encoder.encode(expectedToken)),
-  ]);
-  if (
-    expectedToken.length < 32 || match === null ||
-    !constantTimeEqual(new Uint8Array(suppliedDigest), new Uint8Array(expectedDigest))
-  ) {
+  const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(authorization);
+  if (match === null || match[1].length > 4096) {
     throw new ApiError(401, "unauthorized", "Authentication failed");
   }
+  return match[1];
 }
 
 export interface SeriesPoint {
@@ -417,6 +448,13 @@ export function toDashboardReading(row: StoredTelemetry): Record<string, unknown
     signal: signalFromRssi(row.espnow_rssi_dbm),
     batteryVoltage: row.battery_mv === null ? null : row.battery_mv / 1000,
     batteryPercent: row.battery_percent === null ? null : Number(row.battery_percent),
+    currentMilliamps: row.current_ma,
+    powerMilliwatts: row.power_mw,
+    powerMeasured: row.power_measured,
+    samplingMode: row.sampling_mode,
+    sensorFirmwareBuild: row.sensor_firmware_build,
+    sensorFirmware: row.sensor_firmware,
+    gatewayFirmware: row.gateway_firmware,
     sequence: row.sequence,
   };
 }

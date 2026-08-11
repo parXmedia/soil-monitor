@@ -1,27 +1,39 @@
 # Public dashboard
 
-This directory is a dependency-free static dashboard intended for GitHub Pages.
+This directory is a build-free static dashboard intended for GitHub Pages.
 It reads data from a separate HTTPS cloud API; GitHub Pages cannot receive data
 directly from an ESP32 or store time-series readings.
 
+The code is split by responsibility: `data.js` contains pure validation and
+statistics helpers, `auth.js` wraps Supabase Auth passkeys, and `app.js` owns
+browser state, requests, and rendering. The pinned Supabase browser client is
+self-hosted under `vendor/`; the page executes no third-party CDN scripts.
+
 ## Configure
 
-Edit `config.js` and set `apiBaseUrl` to the deployed **read-only** cloud API:
+Edit `config.js` and set the Supabase project URL, its public publishable key,
+and the deployed read-only function URL:
 
 ```js
-apiBaseUrl: "https://soil-api.example.workers.dev"
+supabaseUrl: "https://PROJECT_REF.supabase.co",
+publishableKey: "sb_publishable_...",
+apiBaseUrl: "https://PROJECT_REF.supabase.co/functions/v1/soil-api"
 ```
 
-Never place Wi-Fi credentials, API write keys, database passwords, or private
-tokens in this directory. GitHub Pages repositories and delivered JavaScript are
-public. The API should restrict browser CORS responses to the exact Pages origin,
-rate-limit requests, validate all gateway writes, and return only sensor fields.
+Supabase publishable keys are designed for public applications and do not grant
+garden access by themselves. Never place Wi-Fi credentials, a Supabase secret
+key, the service-role key, the ingest secret, database passwords, or user session
+tokens in this directory.
 
-The dashboard asks the viewer for a revocable **read-only bearer token**. It is
-kept in `sessionStorage`, sent only in the HTTPS `Authorization` header, and
-discarded when the tab closes or **Forget key** is selected. The read token must
-not grant writes, configuration changes, or direct database access. The API must
-allow the `Authorization` request header in its CORS preflight response.
+Normal sign-in uses a discoverable Supabase Auth passkey and does not ask for an
+email, password, or shared access key. Supabase manages a short-lived user JWT;
+the Edge Function verifies it and checks that its user ID equals the configured
+device's `owner_id`. The confirmed owner email is retained only as first-time
+enrollment and recovery access.
+
+Supabase currently labels passkey support experimental and requires
+`@supabase/supabase-js` 2.105.0 or newer. The vendored client is pinned to
+2.105.0 so an upstream release cannot silently change the deployed site.
 
 ## API contract
 
@@ -38,19 +50,26 @@ allow the `Authorization` request header in its CORS preflight response.
   "signal": 56,
   "batteryVoltage": 4.05,
   "batteryPercent": 82,
-  "sequence": 12345
+  "sequence": 12345,
+  "currentMilliamps": 96,
+  "powerMilliwatts": 389,
+  "powerMeasured": true,
+  "samplingMode": "live",
+  "sensorFirmwareBuild": 196609,
+  "sensorFirmware": "3.0.1",
+  "gatewayFirmware": "3.0.0"
 }
 ```
 
-Only `timestamp` and `moisture` are required. Battery fields are optional until
-battery-voltage sensing is added to the garden board.
+Only `timestamp` and `moisture` are required. Battery and power fields are
+optional. `powerMeasured: false` means the sensor used its configured current
+estimate because current-sense hardware was not fitted.
 
-The garden transmitter supports a temporary 30-second test mode and a
-five-minute low-power mode. That setting is controlled only from the gateway's
-LAN dashboard at `soil-monitor.local`; the public page remains read-only. This
-dashboard polls the cloud API every 15 seconds and conservatively labels a
-reading stale after six minutes, which covers the low-power interval plus one
-minute of radio/upload grace.
+The garden transmitter supports instant readings every two seconds and a
+five-minute cadence selected from the gateway's local dashboard. The public
+page remains read-only. It polls the cloud API every 2 seconds and
+conservatively labels a reading stale after six minutes so brief internet
+interruptions do not immediately hide the most recent valid cloud reading.
 
 `GET {apiBaseUrl}/v1/history?hours=24`
 
@@ -82,9 +101,8 @@ python3 tests/mock_server.py --port 8080
 ```
 
 Then open `http://127.0.0.1:8080`. The mock server binds only to the current
-computer and returns synthetic readings. Enter `demo-read-token` on the lock
-screen. Local HTTP APIs are accepted only when the dashboard itself is running
-on localhost; deployed dashboards require HTTPS.
+computer and supplies a synthetic signed-in passkey session and readings. Local
+HTTP is accepted only for loopback development; deployed passkeys require HTTPS.
 
 ## Publish with GitHub Pages
 

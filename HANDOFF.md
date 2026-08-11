@@ -1,45 +1,24 @@
-# Handoff — what to run next
+# Handoff — remaining physical setup
 
-Six commits are on the local `hardening` branch. **Nothing has been pushed** — the
-sandbox has no GitHub credentials.
+The cloud history schema, live-power columns, device ownership, Auth URLs, and
+passkey relying-party settings are applied to the hosted Supabase project. The
+production history RPC returns data for `garden-sensor-1`, and both firmware
+targets compile locally.
 
-## 1. Push and let CI compile the firmware
+## 1. Finish owner enrollment
 
-The firmware changes are substantial and **were not compiled locally** — the
-sandbox can't reach the PlatformIO registry to download the ESP32 toolchain. The
-new CI workflow builds both targets, so push the branch first and let it check:
+An owner invitation was sent to the email on the Supabase account. Open that
+message on the Mac, follow its link to the published dashboard, and choose
+**Add a passkey**. Approve the Touch ID prompt. With Passwords & Keychain sync
+enabled for the same Apple Account, the passkey should appear automatically on
+the iPhone. If it does not, open the recovery email flow on the iPhone and add a
+second passkey there.
 
-```sh
-cd ~/Documents/CS\ Projects/openfarms
-git push -u origin hardening
-```
+This Touch ID/Face ID ceremony intentionally cannot be completed by automation.
+After at least one passkey is registered, sign out and confirm **Continue with
+passkey** restores both the live reading and history chart.
 
-Watch <https://github.com/parXmedia/soil-monitor/actions>. When `firmware`,
-`backend`, and `dashboard` are all green:
-
-```sh
-git checkout main && git merge --ff-only hardening && git push
-```
-
-Pushing to `main` redeploys GitHub Pages. If a build fails, send me the log and
-I'll fix it rather than you debugging my code.
-
-## 2. Apply the database migration
-
-`supabase/migrations/20260809120000_retention_rollup_alerts.sql` is not applied
-yet. Run it via `supabase db push`, or paste it into the SQL editor. It is
-transactional and safe to re-run.
-
-Afterwards confirm the hourly job exists:
-
-```sql
-select jobname, schedule from cron.job;
-```
-
-If `pg_cron` wasn't available the migration prints a notice instead of failing —
-in that case schedule `select public.roll_up_telemetry(7, 730);` yourself.
-
-## 3. Turn alerts on
+## 2. Turn alerts on
 
 Alerts are the reason the project becomes useful day to day, and they are
 **inert until you configure a delivery channel**. Set these as Edge Function
@@ -59,22 +38,22 @@ Tune per device if you want:
 ```sql
 update public.devices
 set dry_threshold_pct = 25, battery_low_mv = null, alerts_enabled = true
-where device_id = 'garden-01';
+where device_id = 'garden-sensor-1';
 ```
 
-## 4. Flash both boards
+## 3. Flash both boards
 
 Gateway first — it's the one that gained the watchdog, the flash spool, and
 calibration. `pio run -e display_receiver -t upload`.
 
-Then the sensor: `pio run -e sensor_transmitter -t upload`. This one needs the
-BOOT/RESET dance because deep sleep hides its USB port — hold **BOOT**, tap
-**RESET**, release **BOOT**, then upload.
+Then the sensor: `pio run -e sensor_transmitter -t upload`. The simplified
+sensor stays awake, so its USB port should remain available. Use the BOOT/RESET
+dance only if the normal upload port is unavailable.
 
 After the gateway boots, set an OTA password from the setup portal so future
 firmware goes over Wi-Fi instead of USB.
 
-## 5. Calibrate the wet endpoint
+## 4. Calibrate the wet endpoint
 
 Still the largest source of error in the whole system. `WET_RAW = 1300` has
 never been measured, so today's percentage is a guess and any alert threshold
@@ -84,11 +63,11 @@ in the **Calibration** card.
 
 ## Not done — needs hardware or a decision
 
-- **Battery divider.** Firmware support is in and gated behind
-  `BATTERY_SENSE_PIN`, but the two resistors aren't fitted, so you still get no
-  warning before the garden node dies.
-- **MOSFET load switch** for the probe (`SENSOR_POWER_PIN` is still `-1`, so the
-  probe draws current through deep sleep).
+- **Battery monitoring.** The simplified sensor reports battery voltage as
+  unavailable; add both the measurement hardware and firmware support if it is
+  needed.
+- **Continuous-power sizing.** The sensor and probe remain awake, so size the
+  battery/solar system for continuous load rather than deep-sleep duty cycling.
 - **200-foot antenna field test.**
 - **Rotate the Wi-Fi password.** It was pasted in plaintext in `chat.txt` and in
   the original chat. `chat.txt` is now git-ignored so it can't be published, but

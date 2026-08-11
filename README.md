@@ -2,9 +2,8 @@
 
 This project turns two ESP32-S3 boards into a long-range garden soil monitor:
 
-- A Seeed XIAO ESP32-S3 reads a Capacitive Soil Moisture Sensor v1.2, sends one
-  filtered sample, and returns to deep sleep for either 30 seconds or five
-  minutes.
+- A Seeed XIAO ESP32-S3 stays awake, reads a Capacitive Soil Moisture Sensor
+  v1.2, and sends a filtered sample every two seconds.
 - A LAFVIN ESP32-S3 1.69-inch LCD board receives the sample, acknowledges it,
   keeps the moisture and wireless-strength screen active, and serves a local
   dashboard at `http://soil-monitor.local`.
@@ -23,7 +22,7 @@ not expose the gateway's HTTP server with router port forwarding or UPnP.
 
 ```mermaid
 flowchart LR
-    S["Garden XIAO ESP32-S3<br/>probe + selectable deep sleep"]
+    S["Garden XIAO ESP32-S3<br/>always-awake probe transmitter"]
     G["Indoor LAFVIN gateway<br/>LCD + local dashboard"]
     E["Supabase Edge Function<br/>HMAC validation"]
     D["Supabase Postgres<br/>RLS-protected telemetry"]
@@ -36,12 +35,13 @@ flowchart LR
 ```
 
 The radio link is encrypted ESP-NOW unicast with a 16-byte PMK and LMK, exact
-peer-MAC allowlists, protocol/length validation, sequence tracking, and an
-application-level acknowledgement for every accepted reading. Both radios
+peer-MAC allowlists, protocol/length validation, and sequence tracking. The
+gateway still sends an application acknowledgement for accepted readings, but
+the simplified sensor does not wait for commands in it. Both radios
 request ESP32 Long Range mode and 20 dBm transmit power. The sensor first tries
 the last successful channel, then scans 2.4 GHz channels 1 through 11 until it
-receives the matching acknowledgement. The gateway follows the channel used by
-the home 2.4 GHz Wi-Fi network.
+gets a successful ESP-NOW delivery result. The gateway follows the channel used
+by the home 2.4 GHz Wi-Fi network.
 
 Long Range mode and direct sight improve the link budget, but 200 feet is a
 deployment target rather than a guaranteed distance. Test at the actual site.
@@ -67,36 +67,18 @@ The display pin map is board-specific and lives in
 [`include/board_pins.h`](include/board_pins.h). Do not use the display build on
 a different LCD board until its controller and pin map have been verified.
 
-## Solar and battery deployment
+## Power and deployment
 
-The transmitter firmware shuts down Wi-Fi, turns off the XIAO user LED, and
-enters timer deep sleep after each delivery attempt. The default is
-`MEASUREMENT_INTERVAL_SECONDS=300` in [`platformio.ini`](platformio.ini). The
-local dashboard can command either five-minute low-power mode or 30-second
-updates; the gateway stores the selection and includes it in the encrypted
-application acknowledgement. Thirty-second mode wakes the radio ten times as
-often and fills the database ten times faster, so it is a bench-test cadence
-only. A firmware update resets the stored selection back to low power.
+The transmitter never enters deep sleep: its CPU, radio, and probe remain on.
+`MEASUREMENT_INTERVAL_SECONDS=2` in [`platformio.ini`](platformio.ini) sets the
+startup cadence. The local dashboard toggle switches between instant readings
+every two seconds and five-minute readings; the gateway saves that choice.
 
-There are two important limitations in the present hardware:
-
-1. `SENSOR_POWER_PIN=-1`, and the probe is wired directly to `3V3`. The ESP32
-   sleeps, but the probe remains powered and continues drawing current. For a
-   longer solar runtime, use a proper 3.3 V load switch or suitable MOSFET stage
-   controlled by a spare GPIO, add a defined pull state, and set
-   `SENSOR_POWER_PIN` to that GPIO. The code assumes `HIGH` enables the sensor
-   and waits 450 ms before sampling. Do not assume that powering an unknown
-   probe directly from a GPIO is safe.
-2. The XIAO has no on-board battery divider, so `batteryMillivolts` ships as
-   unavailable (`0`/`null`) and you get **no warning before the garden node goes
-   silent**. The firmware side is now implemented: fit a correctly sized
-   high-impedance divider from the battery to an unused ADC pin — sized so the
-   pin stays within its allowed voltage at maximum cell charge — then set
-   `BATTERY_SENSE_PIN` and, if the resistors are unequal,
-   `BATTERY_DIVIDER_NUMERATOR`/`BATTERY_DIVIDER_DENOMINATOR` in
-   [`platformio.ini`](platformio.ini). Readings outside 2500-5500 mV are
-   reported as unavailable rather than as a plausible-looking fiction. Set
-   `devices.battery_low_mv` to enable the low-battery alert.
+This is useful for bench diagnosis and reliable USB serial access, but it uses
+substantially more power than sleeping firmware. The current build also reports
+battery voltage and current/power as unavailable because no measurement circuit
+is fitted. Size any battery, regulator, charger, and solar panel for continuous
+operation rather than for a sleeping load.
 
 Use a solar charger/power-path board intended for the panel and battery
 chemistry, a protected cell, and a regulated output compatible with the XIAO.
@@ -120,10 +102,10 @@ The build intentionally fails if the private radio header is absent.
 3. Flash both boards from the same private header so their PMK and LMK match.
 
 Never deploy the example values. `include/radio_secrets.h` is ignored by Git and
-must remain uncommitted. The peer MAC addresses are also compiled into
-[`src/main.cpp`](src/main.cpp); if either ESP32 board is replaced, update both
-the gateway's `SENSOR_MAC` and the sensor's `GATEWAY_MAC`, then reflash both
-boards.
+must remain uncommitted. The peer MAC addresses are compiled into
+[`src/display_gateway.cpp`](src/display_gateway.cpp) and
+[`src/sensor_node.cpp`](src/sensor_node.cpp); if either ESP32 board is replaced,
+update both `SENSOR_MAC` and `GATEWAY_MAC`, then reflash both boards.
 
 ## Build and flash with VS Code and PlatformIO
 
@@ -150,11 +132,9 @@ pio run -e display_receiver -t upload
 pio run -e sensor_transmitter -t upload
 ```
 
-Serial monitoring runs at 115200 baud. Use `Monitor LAFVIN Display` for normal
-diagnostics. The production sensor build has `SENSOR_DEBUG=0` and quickly
-enters deep sleep, so its USB serial port disappearing between wake cycles is
-expected. Temporarily enable sensor debug only for bench diagnosis, then return
-it to `0` for battery operation.
+Serial monitoring runs at 115200 baud. The sensor prints its MAC address, radio
+startup result, raw ADC value, converted voltage, channel, and delivery result
+for every reading. Because it stays awake, its USB serial port remains present.
 
 ## Provision the display gateway
 
@@ -205,9 +185,14 @@ header.
 
 The LCD continues to show the latest moisture percentage, raw ADC value, link
 state, signal percentage, RSSI, and elapsed time since the last sensor update
-while the sensor sleeps. Freshness follows the sensor's advertised interval plus
-a bounded radio allowance: 30-second mode becomes stale after 60 seconds, and
-five-minute mode becomes stale after six minutes.
+between sensor updates. Its header also reports the home Wi-Fi and cloud API
+links separately: `WIFI OK` confirms the gateway is associated with the router,
+while `SERVER OK` confirms a successful cloud upload. `SERVER WAIT` means Wi-Fi
+is connected but the cloud uploader has not yet succeeded. The onboard RGB LED
+briefly flashes cyan whenever the gateway accepts a new sensor packet. Important
+header and footer text stays inside a 20-pixel safe margin for the LCD's rounded
+corners. The current live packets become stale after seven seconds without a new
+reading.
 
 On the same home LAN, open:
 
@@ -215,25 +200,26 @@ On the same home LAN, open:
 http://soil-monitor.local
 ```
 
-The **Sampling mode** card has an explicit switch: **ON** requests 30-second
-test updates and **OFF** requests five-minute low-power operation. The choice is
-sent to the sensor at its next check-in, so the card may briefly say `Pending`.
+The **Sampling mode** card has an Instant toggle. Turn it on for a reading every
+two seconds or off for a reading every five minutes. Because the sensor radio
+stays awake, either change is pushed immediately and survives gateway restarts.
 The control endpoint accepts only a same-origin JavaScript request with a
 non-simple control header, which prevents a normal cross-site form from changing
 the mode.
 
-The local dashboard reports moisture, RSSI, packet reliability, raw ADC and
-sensor voltage, age, trend, and in-memory history. Its history resets whenever
+The local dashboard reports moisture, RSSI, packet reliability, raw ADC,
+sensor voltage, live current/power, battery, firmware/protocol versions, age,
+trend, and in-memory history. It also provides calibration reset, local-history
+clear, refresh, gateway restart, and legacy sensor-update controls. The
+simplified sensor does not act on staged wireless updates. History resets when
 the display gateway restarts. If `.local` name resolution is unavailable, use
 the IP address printed in the display serial log or shown by the router.
 
 ## Calibrate the moisture percentage
 
 **Calibration is set from the local dashboard and takes effect immediately. No
-reflash is required.** The gateway derives the percentage from the raw ADC value
-in each packet, so the endpoints live in the gateway's flash rather than in the
-sensor's firmware — which matters, because the sensor spends its life asleep in
-a garden bed and its USB port disappears with it.
+reflash is required.** The gateway derives the percentage from each packet's raw
+ADC value and stores the endpoints in its own flash.
 
 The shipped defaults are `dry = 2513`, `wet = 1300`. `DRY_RAW` was measured from
 this specific probe in air at 3.3 V on 2026-08-09 (stable at 2511-2515 ADC).
@@ -241,15 +227,18 @@ this specific probe in air at 3.3 V on 2026-08-09 (stable at 2511-2515 ADC).
 until you complete step 2 below the percentage is an educated guess and any
 alerting built on it inherits that error.
 
-1. Open <http://soil-monitor.local> and read the **Raw ADC** value with the
-   probe in representative dry soil.
-2. Water that soil fully, let it drain, and read **Raw ADC** again.
-3. Enter both numbers in the **Calibration** card and press **Save**. Dry must
-   exceed wet by at least 200 counts; the gateway rejects anything closer as a
-   likely typo.
+1. Open <http://soil-monitor.local> and turn on **Instant** readings.
+2. Remove the probe from soil, keep it dry and still, and press **Capture air**.
+   The page waits for three new readings and uses their median only after they
+   are stable.
+3. Immerse only the sensing section in water, keep the connector/electronics
+   dry, wait for the displayed raw value to settle, and press **Capture water**.
+4. When both points are ready, press **Save two-point calibration**. The open-air
+   value must exceed the water value by at least 200 ADC counts.
 
-The display and the cloud upload both switch to the new scale on the next
-packet. Stored history keeps whatever scale was in force when it was recorded.
+The display, local dashboard, new local history samples, and future cloud
+uploads all switch to the new scale. Local history is cleared when the scale
+changes so old and new percentages are not mixed.
 
 Do not immerse the connector or electronics above the probe's safe sensing
 area. The calculation maps the dry endpoint to 0% and wet endpoint to 100%, then
@@ -271,20 +260,25 @@ is the broken half.
 
 **Upload buffering.** Readings are spooled to a CRC-checked LittleFS file
 before upload, so an internet outage or a power cut does not punch a hole in the
-history. The buffer holds roughly 24 hours at five-minute sampling; past that
+history. The buffer holds roughly two hours at two-second sampling; past that
 the oldest reading is dropped. The dashboard's **Cloud upload** card shows the
 current depth and any drops. If the flash filesystem cannot be mounted, the
 gateway falls back to a small RAM queue and says so in the serial log.
 
-**Wireless updates.** Set an OTA password (12+ characters) during Wi-Fi setup to
-enable `pio run -e display_receiver -t upload --upload-port soil-monitor.local`.
-Leave it blank and updates stay USB-only; an unauthenticated OTA listener would
-be remote code execution on your network.
+**Wireless updates.** The display gateway uses password-protected Arduino OTA.
+Set a 12+ character password during Wi-Fi setup, then run
+`pio run -e display_receiver -t upload --upload-port soil-monitor.local`.
+
+The simplified garden-sensor firmware deliberately omits wireless self-update
+logic. Build and upload the `sensor_transmitter` environment over USB when a
+future sensor update is wanted; never upload the display image to the sensor.
+The gateway's legacy sensor-update form may still stage a file, but this sensor
+will ignore that command.
 
 **Database growth.** `roll_up_telemetry()` aggregates raw readings older than
 seven days into hourly buckets and prunes them, keeping the newest row per
 device so `device_state` stays valid. It is scheduled hourly by pg_cron in the
-retention migration. Without it, 30-second sampling produces about 1.05 million
+retention migration. Without it, two-second sampling produces about 15.8 million
 rows a year.
 
 **Alerts.** `evaluate_alerts()` latches dry-soil, sensor-offline, and low-battery
@@ -329,13 +323,14 @@ Detailed API and security instructions are in
    supabase db push
    ```
 
-3. Insert one `devices` row whose `device_id` exactly matches the gateway
-   setting. `owner_id` may remain empty for this shared read-token design; set
-   it before adding owner-scoped Supabase Auth policies later.
+3. In Supabase Authentication, create and confirm the owner's email user. Insert
+   one `devices` row whose `device_id` exactly matches the gateway setting and
+   set `owner_id` to that Auth user's UUID. Reads are denied when `owner_id` is
+   empty or belongs to another user.
 4. Copy `supabase/.env.example` to the ignored `supabase/.env.local`. Generate
-   different random values for `SOIL_INGEST_SECRET` and `SOIL_READ_TOKEN`; do
-   not reuse the ESP-NOW keys, Wi-Fi password, database password, or service-role
-   key. Set `SOIL_ALLOWED_ORIGIN` to the exact Pages origin, for example
+   a random value for `SOIL_INGEST_SECRET`; do not reuse the ESP-NOW keys,
+   Wi-Fi password, database password, or service-role key. Set
+   `SOIL_ALLOWED_ORIGIN` to the exact Pages origin, for example
    `https://YOUR-GITHUB-USER.github.io` with no repository path or trailing
    slash.
 5. Upload the function secrets and deploy:
@@ -345,9 +340,10 @@ Detailed API and security instructions are in
    supabase functions deploy soil-api --no-verify-jwt
    ```
 
-   Supabase's gateway JWT check is intentionally disabled for this function
-   because the function performs its own HMAC check for writes and separate
-   bearer-token check for reads. Database RLS remains enforced.
+   Supabase's gateway JWT check is intentionally disabled because one function
+   accepts both HMAC-authenticated gateway writes and user-JWT dashboard reads.
+   The handler verifies each credential and device ownership itself. Database
+   RLS remains enforced.
 6. Provision the display with this full ingest URL:
 
    ```text
@@ -363,27 +359,31 @@ across a gateway reboot and is not a substitute for offline storage.
 
 ## Publish the GitHub Pages dashboard
 
-The public dashboard is in [`dashboard/`](dashboard/). Set only its public Edge
-Function base URL in [`dashboard/config.js`](dashboard/config.js):
+The public dashboard is in [`dashboard/`](dashboard/). Set its public Supabase
+project values in [`dashboard/config.js`](dashboard/config.js):
 
 ```js
+supabaseUrl: "https://PROJECT_REF.supabase.co",
+publishableKey: "sb_publishable_...",
 apiBaseUrl: "https://PROJECT_REF.supabase.co/functions/v1/soil-api"
 ```
 
-Do not put the read token or any private value in `config.js`, HTML, JavaScript,
-commits, Actions logs, or Pages settings. Publish `dashboard/` with GitHub's
-official static Pages workflow and set the uploaded artifact path to
-`./dashboard`. If using the simpler branch-source setting instead, GitHub Pages
-accepts the repository root or `/docs`; copy the dashboard contents into the
-selected source without copying any private files.
+The publishable key is safe in a public client; never put a secret/service-role
+key or ingest secret there. Publish `dashboard/` with GitHub's official static
+Pages workflow and set the uploaded artifact path to `./dashboard`.
 
-After deployment, open the Pages URL and enter `SOIL_READ_TOKEN` on the access
-screen. The dashboard keeps it only in `sessionStorage`, sends it only as an
-HTTPS bearer token, and removes it when the tab closes or **Forget key** is
-selected. A bearer token is still readable by anyone who possesses it. For
-multi-user or strongly private data, replace the shared read token with Supabase
-Auth and owner-scoped authorization rather than embedding a token in a static
-site.
+Before enrollment, enable Supabase Auth passkeys with RP ID
+`parxmedia.github.io` and RP origin `https://parxmedia.github.io`, and add
+`https://parxmedia.github.io/soil-monitor/` as an allowed redirect URL. Open the
+Pages site, expand **First-time setup or recovery**, request the owner email
+link, then choose **Passkeys → Add a passkey**. Later visits use Face ID or Touch
+ID and do not require an access key.
+
+When the Mac and iPhone use the same Apple Account with Passwords & Keychain
+sync enabled, the passkey normally appears on both. If it does not, use the
+owner email link once on the second device and add another passkey there. Keep
+the email account recoverable and preferably enroll a second passkey before
+depending on passwordless access exclusively.
 
 More dashboard details and the JSON contract are in
 [`dashboard/README.md`](dashboard/README.md).
@@ -412,16 +412,15 @@ To preview the Pages dashboard with synthetic data:
 python3 dashboard/tests/mock_server.py --port 8080
 ```
 
-Open `http://127.0.0.1:8080` and use the mock token documented in
-[`dashboard/README.md`](dashboard/README.md). The mock server binds locally and
-does not contact the garden device or Supabase.
+Open `http://127.0.0.1:8080`. The mock server supplies a synthetic passkey
+session, binds locally, and does not contact the garden device or Supabase.
 
 For an end-to-end hardware check:
 
 1. Test both boards close together and confirm the gateway log reports an
    ESP-NOW receiver ready on a 2.4 GHz channel.
 2. Confirm the next packet is acknowledged, the LCD shows a believable raw
-   reading and RSSI, and the packet counter advances after about five minutes.
+   reading and RSSI, and the packet counter advances about every two seconds.
 3. Confirm `http://soil-monitor.local` works from another device on the home
    LAN while the LCD continues updating.
 4. With cloud settings installed, confirm the gateway status changes to cloud
@@ -436,13 +435,13 @@ For an end-to-end hardware check:
 |---|---|
 | LCD is blank but a blue LED is on | An LED proves power, not that the correct firmware is running. Verify the `display_receiver` environment, data-capable USB cable, selected port, and serial output. Check `include/board_pins.h` only against this exact LAFVIN board revision. |
 | Moisture always reads 100% | Check the live raw ADC value. Verify `AOUT -> D10/GPIO9`, `VCC -> 3V3`, common `GND`, and that a digital output is not connected. Recalibrate `DRY_RAW`/`WET_RAW`; do not hide a wiring fault by changing only the percentage. |
-| LCD says `WAITING` or `LOST` | The sensor normally sleeps for five minutes, so wait for a complete wake interval. Confirm matching PMK/LMK, correct peer MAC constants, attached antenna, and an unobstructed 2.4 GHz path. A true lost state appears only after roughly 15 minutes 15 seconds without a valid packet. |
-| Sensor USB port vanishes | This is expected in deep sleep. To reflash a hard-to-catch XIAO, hold BOOT, press/release RESET, release BOOT, select the bootloader port, and upload again. |
+| LCD says `WAITING` or `LOST` | Allow several seconds at the current two-second cadence. Confirm matching PMK/LMK, correct peer MAC constants, attached antenna, and an unobstructed 2.4 GHz path. |
+| Sensor USB port vanishes | The new firmware does not intentionally sleep. Check power, the data cable, USB port, and whether the board reset or crashed. Hold BOOT while tapping RESET only if you need the ROM bootloader. |
 | `SoilMonitor-Setup` is missing | Hold BOOT during display reset, release it after boot, use the private WPA2 password, and connect within the ten-minute setup window. Power-cycle and retry if the window expired. |
 | `soil-monitor.local` does not open | Confirm the laptop and gateway are on the same non-isolated LAN. Try the IP address from serial or the router because some networks block mDNS between VLANs or clients. Never solve this with internet port forwarding. |
-| Sensor cannot find the gateway after a router change | The gateway must use 2.4 GHz. The sensor scans channels 1–11 after cached-channel retries; wait for a wake cycle. Configure the router to a channel in that range and avoid client isolation. |
+| Sensor cannot find the gateway after a router change | The gateway must use 2.4 GHz. The sensor scans channels 1–11 on its next reading. Configure the router to a channel in that range and avoid client isolation. |
 | Cloud stays `WAITING` | Verify internet and NTP access, an HTTPS ingest URL, matching device ID and ingest secret, a deployed `soil-api` function, and a provisioned `devices` row. Inspect Supabase Function logs without printing secrets. Clock-skew rejection is expected when gateway time is not synchronized. |
-| Pages says configuration or authorization failed | Confirm `apiBaseUrl` ends at `/soil-api`, `SOIL_ALLOWED_ORIGIN` is the exact HTTPS origin without a path, and the entered value is the separate read token. Do not substitute an ingest secret, anon key, or service-role key. |
+| Pages says configuration or authorization failed | Confirm `supabaseUrl` and `apiBaseUrl` use the same project, `publishableKey` is the public `sb_publishable_...` value, `SOIL_ALLOWED_ORIGIN` is the exact Pages origin, the passkey RP ID/origin are correct, and the signed-in Auth user matches `devices.owner_id`. Never use an ingest, secret, or service-role key in the page. |
 | Battery is unavailable | This is the expected current state. Add a safe external divider and implement ADC-to-battery conversion before expecting voltage or percentage fields. |
 
 ## Security checklist
@@ -450,14 +449,15 @@ For an end-to-end hardware check:
 - Keep `include/radio_secrets.h`, `include/local_provisioning.h`,
   `supabase/.env.local`, and all credentials out of Git.
 - Use different random values for ESP-NOW PMK, ESP-NOW LMK, setup WPA2,
-  cloud ingest HMAC, cloud read token, and database credentials.
+  cloud ingest HMAC, and database credentials.
 - Keep the display behind the home router; no inbound port forwarding is
   required for Supabase uploads or GitHub Pages reads.
 - Never put a service-role key, ingest secret, Wi-Fi credential, or database
   password in the static dashboard.
 - Restrict CORS to the exact Pages origin, but do not treat CORS as
   authentication.
-- Rotate radio and cloud credentials after a device, firmware image, or token is
-  lost or exposed, and reflash both ESP-NOW peers after radio-key rotation.
+- Revoke lost passkeys in Supabase Auth. Rotate radio and cloud credentials
+  after a device or firmware image is lost or exposed, and reflash both
+  ESP-NOW peers after radio-key rotation.
 - Enable 2FA, secret scanning, protected branches, and dependency/update alerts
   on the hosting accounts and repository.

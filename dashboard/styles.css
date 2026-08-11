@@ -301,6 +301,86 @@ h1 {
   font-weight: 700;
 }
 
+.primary-auth-button,
+.account-actions button {
+  padding: 11px 15px;
+  border: 0;
+  border-radius: 10px;
+  color: #052011;
+  background: var(--green);
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.primary-auth-button:hover,
+.account-actions button:hover { filter: brightness(1.08); }
+
+.primary-auth-button:focus-visible,
+.account-actions button:focus-visible,
+.setup-details summary:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.setup-details {
+  margin-top: 20px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.setup-details summary {
+  width: fit-content;
+  color: #cce0d3;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.setup-details p { margin: 12px 0; }
+
+.account-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+  padding: 22px 24px;
+}
+
+.account-panel[hidden] { display: none; }
+
+.account-panel h2 {
+  margin: 2px 0 6px;
+  font-size: 1.3rem;
+}
+
+.account-panel p,
+.account-panel ul {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.account-panel ul { margin-top: 10px; padding-left: 20px; }
+.account-panel li + li { margin-top: 5px; }
+
+.account-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 9px;
+}
+
+.account-actions .secondary-button {
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  background: rgba(3, 13, 7, 0.75);
+}
+
+.account-panel .account-message {
+  margin-top: 10px;
+  color: var(--cyan);
+  font-weight: 700;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
@@ -604,6 +684,8 @@ footer {
   .access-gate { grid-template-columns: 1fr; padding: 20px; }
   .access-icon { display: none; }
   .key-row { flex-direction: column; }
+  .account-panel { flex-direction: column; }
+  .account-actions { width: 100%; flex-direction: column; }
   .hero, .history { padding: 18px; border-radius: 18px; }
   .metric-grid { gap: 9px; }
   .metric { min-height: 130px; padding: 15px; border-radius: 17px; }

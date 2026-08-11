@@ -287,7 +287,7 @@ as $$
     select
       pg_catalog.to_timestamp(
         pg_catalog.floor(
-          pg_catalog.extract(epoch from t.sampled_at) / bucket_seconds
+          extract(epoch from t.sampled_at) / bucket_seconds
         ) * bucket_seconds
       ) as bucket,
       t.moisture_pct,
@@ -302,7 +302,7 @@ as $$
     select
       pg_catalog.to_timestamp(
         pg_catalog.floor(
-          pg_catalog.extract(epoch from h.bucket) / bucket_seconds
+          extract(epoch from h.bucket) / bucket_seconds
         ) * bucket_seconds
       ),
       h.moisture_avg,
