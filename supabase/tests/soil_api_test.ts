@@ -16,7 +16,10 @@ import {
   validateTelemetry,
 } from "../functions/soil-api/soil_api.ts";
 
-function assert(condition: unknown, message = "assertion failed"): asserts condition {
+function assert(
+  condition: unknown,
+  message = "assertion failed",
+): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -73,7 +76,14 @@ Deno.test("ingest authentication accepts signed fresh request", async () => {
     "x-timestamp": String(now),
     "x-signature": await hmacSignatureBase64Url(secret, canonical),
   });
-  const result = await authenticateIngest(headers, body, "garden-01", secret, now, 300);
+  const result = await authenticateIngest(
+    headers,
+    body,
+    "garden-01",
+    secret,
+    now,
+    300,
+  );
   assert(result.sequence === 42);
   assert(result.payloadHash === payloadHash);
 });
@@ -103,14 +113,15 @@ Deno.test("ingest authentication rejects stale and modified requests", async () 
     "unauthorized",
   );
   await assertRejectsCode(
-    () => authenticateIngest(
-      headers,
-      new TextEncoder().encode('{"schema":2}'),
-      "garden-01",
-      secret,
-      timestamp,
-      300,
-    ),
+    () =>
+      authenticateIngest(
+        headers,
+        new TextEncoder().encode('{"schema":2}'),
+        "garden-01",
+        secret,
+        timestamp,
+        300,
+      ),
     "unauthorized",
   );
 });
@@ -164,16 +175,26 @@ Deno.test("telemetry validator enforces ranges and canonicalizes time", async ()
     "invalid_reading",
   );
   await assertRejectsCode(
-    () => validateTelemetry({ ...reading, sampled_at: "2026-02-30T12:00:00Z" }, now),
+    () =>
+      validateTelemetry(
+        { ...reading, sampled_at: "2026-02-30T12:00:00Z" },
+        now,
+      ),
     "invalid_reading",
   );
 });
 
 Deno.test("user JWT, history range, and RSSI mapping are bounded", async () => {
   const token = "header.payload.signature";
-  assert(bearerAccessToken(new Headers({ Authorization: `Bearer ${token}` })) === token);
+  assert(
+    bearerAccessToken(new Headers({ Authorization: `Bearer ${token}` })) ===
+      token,
+  );
   await assertRejectsCode(
-    () => Promise.resolve(bearerAccessToken(new Headers({ Authorization: "Bearer shared-key" }))),
+    () =>
+      Promise.resolve(
+        bearerAccessToken(new Headers({ Authorization: "Bearer shared-key" })),
+      ),
     "unauthorized",
   );
   assert(parseHistoryHours(null) === 24);
@@ -185,9 +206,14 @@ Deno.test("user JWT, history range, and RSSI mapping are bounded", async () => {
 });
 
 Deno.test("JSON size limit and dashboard response contract stay stable", async () => {
-  const decoded = decodeJsonBody(new TextEncoder().encode('{"ok":true}')) as { ok: boolean };
+  const decoded = decodeJsonBody(new TextEncoder().encode('{"ok":true}')) as {
+    ok: boolean;
+  };
   assert(decoded.ok === true);
-  await assertRejectsCode(() => decodeJsonBody(new Uint8Array(2049)), "body_too_large");
+  await assertRejectsCode(
+    () => decodeJsonBody(new Uint8Array(2049)),
+    "body_too_large",
+  );
 
   const reading = toDashboardReading({
     id: 1,
@@ -238,7 +264,10 @@ Deno.test("history buckets keep every supported range bounded", () => {
   } catch (error) {
     rejected = error instanceof ApiError && error.code === "invalid_range";
   }
-  assert(rejected, "unsupported ranges must be rejected, not silently bucketed");
+  assert(
+    rejected,
+    "unsupported ranges must be rejected, not silently bucketed",
+  );
 });
 
 Deno.test("series points expose aggregate span and survive null columns", () => {

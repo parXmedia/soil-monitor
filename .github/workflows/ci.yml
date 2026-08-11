@@ -80,7 +80,7 @@ jobs:
 
       - name: Run backend tests
         working-directory: supabase
-        run: deno test --allow-none tests/soil_api_test.ts
+        run: deno test tests/soil_api_test.ts
 
   dashboard:
     name: Dashboard tests

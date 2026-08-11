@@ -1,9 +1,8 @@
 # Supabase soil telemetry backend
 
-This directory contains a database migration and a dependency-free Supabase
-Edge Function. The function is the only public data boundary: database RLS is
-enabled and forced, direct `anon` and `authenticated` table access is revoked,
-and no permissive policies are installed.
+This directory contains a database migration and a dependency-free Supabase Edge Function. The
+function is the only public data boundary: database RLS is enabled and forced, direct `anon` and
+`authenticated` table access is revoked, and no permissive policies are installed.
 
 ## API routes
 
@@ -17,11 +16,10 @@ https://PROJECT_REF.supabase.co/functions/v1/soil-api
 - `GET /v1/current` returns the newest reading.
 - `GET /v1/history?hours=6|24|168` returns at most 2,500 chronological readings.
 
-Both GET routes require a short-lived Supabase Auth user JWT in the
-`Authorization` header. The function validates the JWT with Supabase Auth and
-requires its user ID to match the device's `owner_id`. Normal dashboard sign-in
-uses a passkey; there is no shared read token. Never place the service-role key
-or ingest secret in browser code.
+Both GET routes require a short-lived Supabase Auth user JWT in the `Authorization` header. The
+function validates the JWT with Supabase Auth and requires its user ID to match the device's
+`owner_id`. Normal dashboard sign-in uses a passkey; there is no shared read token. Never place the
+service-role key or ingest secret in browser code.
 
 ## HMAC ingest contract
 
@@ -36,8 +34,7 @@ X-Timestamp: <current Unix time in seconds>
 X-Signature: <unpadded base64url HMAC-SHA256>
 ```
 
-Hash the exact UTF-8 request bytes, then sign this canonical string (there is no
-trailing newline):
+Hash the exact UTF-8 request bytes, then sign this canonical string (there is no trailing newline):
 
 ```text
 v1
@@ -71,21 +68,19 @@ Example JSON body:
 }
 ```
 
-Power fields are nullable outside Live mode. `power_measured: false` identifies
-the configured estimate used when no current-sense circuit is fitted.
+Power fields are nullable outside Live mode. `power_measured: false` identifies the configured
+estimate used when no current-sense circuit is fitted.
 
-The request timestamp must be within the configured 30–900 second window. A
-sample can be up to 30 days old, allowing an offline gateway queue to backfill
-after reconnecting. `(device_id, boot_id, sequence)` is unique. Repeating the
-same signed payload is idempotent; reusing the sequence for different data gets
-`409 sequence_conflict`.
+The request timestamp must be within the configured 30–900 second window. A sample can be up to 30
+days old, allowing an offline gateway queue to backfill after reconnecting.
+`(device_id, boot_id, sequence)` is unique. Repeating the same signed payload is idempotent; reusing
+the sequence for different data gets `409 sequence_conflict`.
 
 ## Provision and deploy
 
-Prerequisites: a Supabase project, Supabase CLI, and a GitHub Pages origin. Do
-not paste credentials into committed commands or files. Run the commands below
-from the `lafvin_wireless_soil_monitor` project root (the directory containing
-this `supabase` directory).
+Prerequisites: a Supabase project, Supabase CLI, and a GitHub Pages origin. Do not paste credentials
+into committed commands or files. Run the commands below from the `lafvin_wireless_soil_monitor`
+project root (the directory containing this `supabase` directory).
 
 1. Link the local directory and apply the migration:
 
@@ -94,12 +89,11 @@ this `supabase` directory).
    supabase db push
    ```
 
-   Apply migrations before flashing gateway v3; otherwise PostgREST does not
-   yet have the new live-power columns and will reject v3 telemetry inserts.
+   Apply migrations before flashing gateway v3; otherwise PostgREST does not yet have the new
+   live-power columns and will reject v3 telemetry inserts.
 
-2. In Authentication → Users, create the owner's email account and mark the
-   email confirmed. In the SQL editor, provision the logical device and assign
-   it to that Auth user:
+2. In Authentication → Users, create the owner's email account and mark the email confirmed. In the
+   SQL editor, provision the logical device and assign it to that Auth user:
 
    ```sql
    insert into public.devices (device_id, display_name, owner_id)
@@ -119,19 +113,18 @@ this `supabase` directory).
    where device_id = 'garden-sensor-1';
    ```
 
-3. Generate a 32-byte random ingest value. Store it only on the indoor gateway
-   and in `SOIL_INGEST_SECRET`. Set function secrets interactively or from an
-   ignored local environment file:
+3. Generate a 32-byte random ingest value. Store it only on the indoor gateway and in
+   `SOIL_INGEST_SECRET`. Set function secrets interactively or from an ignored local environment
+   file:
 
    ```sh
    openssl rand -base64 32
    supabase secrets set --env-file supabase/.env.local
    ```
 
-   `SOIL_ALLOWED_ORIGIN` must be the exact HTTPS origin, such as
-   `https://example.github.io`, with no path or trailing slash. The required
-   names are documented in `.env.example`. Supabase supplies `SUPABASE_URL` and
-   `SUPABASE_SERVICE_ROLE_KEY` to the function automatically.
+   `SOIL_ALLOWED_ORIGIN` must be the exact HTTPS origin, such as `https://example.github.io`, with
+   no path or trailing slash. The required names are documented in `.env.example`. Supabase supplies
+   `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to the function automatically.
 
 4. Deploy the function:
 
@@ -150,19 +143,18 @@ this `supabase` directory).
      - RP ID: `parxmedia.github.io`
      - RP origins: `https://parxmedia.github.io`
 
-   The RP ID has no scheme or path. Do not change it after enrollment because
-   existing passkeys are cryptographically bound to it. Supabase currently
-   labels this feature experimental.
+   The RP ID has no scheme or path. Do not change it after enrollment because existing passkeys are
+   cryptographically bound to it. Supabase currently labels this feature experimental.
 
 6. Copy the project's public `sb_publishable_...` key from Settings → API into
-   `dashboard/config.js`, along with the project and function URLs. A publishable
-   key is safe in client code; a secret or service-role key is not.
+   `dashboard/config.js`, along with the project and function URLs. A publishable key is safe in
+   client code; a secret or service-role key is not.
 
-7. Open the published dashboard on the Mac, request the confirmed owner's email
-   link under **First-time setup or recovery**, then open **Passkeys** and choose
-   **Add a passkey**. With Passwords & Keychain sync enabled on the same Apple
-   Account, that passkey should be available on the iPhone as well. If it is not,
-   repeat the email-link enrollment once on the iPhone to add a second passkey.
+7. Open the published dashboard on the Mac, request the confirmed owner's email link under
+   **First-time setup or recovery**, then open **Passkeys** and choose **Add a passkey**. With
+   Passwords & Keychain sync enabled on the same Apple Account, that passkey should be available on
+   the iPhone as well. If it is not, repeat the email-link enrollment once on the iPhone to add a
+   second passkey.
 
 ## Local validation
 
@@ -174,27 +166,26 @@ deno lint supabase/functions supabase/tests
 deno test supabase/tests
 ```
 
-If Deno is not installed, Node 22 or newer can run the same dependency-free
-helper tests:
+If Deno is not installed, Node 22 or newer can run the same dependency-free helper tests:
 
 ```sh
 node --experimental-strip-types supabase/tests/node_runner.mjs
 ```
 
-For a full local integration test, start Supabase, apply the migration, create a
-test Auth user/device row, populate an ignored `.env.local`, and serve the Edge
-Function with `supabase functions serve soil-api --env-file supabase/.env.local`.
+For a full local integration test, start Supabase, apply the migration, create a test Auth
+user/device row, populate an ignored `.env.local`, and serve the Edge Function with
+`supabase functions serve soil-api --env-file supabase/.env.local`.
 
 ## Security operations
 
 - Keep the gateway behind the home router; do not add port forwarding or UPnP.
-- Keep service-role and HMAC credentials out of Git, Pages, logs, screenshots,
-  firmware source, and serial output. Provision the gateway over USB/NVS.
-- Use a unique HMAC secret per deployed backend and rotate it after suspected
-  exposure. Increment `ingest_key_version` when rotating.
+- Keep service-role and HMAC credentials out of Git, Pages, logs, screenshots, firmware source, and
+  serial output. Provision the gateway over USB/NVS.
+- Use a unique HMAC secret per deployed backend and rotate it after suspected exposure. Increment
+  `ingest_key_version` when rotating.
 - Set an exact CORS origin. CORS is browser isolation, not authentication.
 - Enable GitHub secret scanning, Dependabot, branch protection, and 2FA.
 - Configure platform rate limits/alerts and review Edge Function/database logs.
 - Back up or export telemetry if it matters; free projects are not a backup.
-- The user-provided home Wi-Fi password is not needed by this backend and must
-  never be copied into Supabase, GitHub, code, or documentation.
+- The user-provided home Wi-Fi password is not needed by this backend and must never be copied into
+  Supabase, GitHub, code, or documentation.

@@ -67,8 +67,13 @@ function loadConfig(): RuntimeConfig {
   };
 }
 
-async function authorizeCron(headers: Headers, expected: string): Promise<boolean> {
-  const match = /^Bearer ([!-~]{32,512})$/.exec(headers.get("authorization") ?? "");
+async function authorizeCron(
+  headers: Headers,
+  expected: string,
+): Promise<boolean> {
+  const match = /^Bearer ([!-~]{32,512})$/.exec(
+    headers.get("authorization") ?? "",
+  );
   const [supplied, wanted] = await Promise.all([
     crypto.subtle.digest("SHA-256", encoder.encode(match?.[1] ?? "")),
     crypto.subtle.digest("SHA-256", encoder.encode(expected)),
@@ -92,9 +97,7 @@ function describe(alert: AlertTransition, dashboardUrl: string | null): {
     case "dry_soil": {
       const moisture = detail.moisture ?? "unknown";
       const threshold = detail.threshold ?? "unknown";
-      subject = cleared
-        ? `Soil moisture recovered on ${device}`
-        : `Soil is dry on ${device}`;
+      subject = cleared ? `Soil moisture recovered on ${device}` : `Soil is dry on ${device}`;
       body = cleared
         ? `Moisture is back above the ${threshold}% threshold.`
         : `Moisture has fallen to ${moisture}%, below the ${threshold}% threshold. Time to water.`;
@@ -112,9 +115,7 @@ function describe(alert: AlertTransition, dashboardUrl: string | null): {
     }
     case "battery_low": {
       const batteryMv = detail.batteryMv ?? "unknown";
-      subject = cleared
-        ? `Battery recovered on ${device}`
-        : `Battery is low on ${device}`;
+      subject = cleared ? `Battery recovered on ${device}` : `Battery is low on ${device}`;
       body = cleared
         ? "Battery voltage is back above the configured threshold."
         : `Battery is at ${batteryMv} mV. Recharge or check the solar panel before the node goes silent.`;
@@ -126,7 +127,9 @@ function describe(alert: AlertTransition, dashboardUrl: string | null): {
   return { subject, body };
 }
 
-async function fetchTransitions(config: RuntimeConfig): Promise<AlertTransition[]> {
+async function fetchTransitions(
+  config: RuntimeConfig,
+): Promise<AlertTransition[]> {
   const url = new URL("/rest/v1/rpc/evaluate_alerts", config.supabaseUrl);
   const response = await fetch(url, {
     method: "POST",
@@ -148,7 +151,9 @@ async function deliverEmail(
   subject: string,
   body: string,
 ): Promise<boolean> {
-  if (!config.resendApiKey || !config.alertFrom || !config.alertTo) return false;
+  if (!config.resendApiKey || !config.alertFrom || !config.alertTo) {
+    return false;
+  }
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
