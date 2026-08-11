@@ -1,207 +1,78 @@
-const DEFAULT_CONFIG = Object.freeze({
-  apiBaseUrl: "",
-  currentPath: "/v1/current",
-  historyPath: "/v1/history",
-  pollIntervalMs: 2000,
-  historyRefreshIntervalMs: 300000,
-  requestTimeoutMs: 8000,
-  staleAfterMs: 360000,
-  thresholds: Object.freeze({ dryBelow: 25, healthyBelow: 80 })
-});
+import {
+  DEFAULT_CONFIG,
+  buildApiUrl,
+  classifyMoisture,
+  clamp,
+  computeStats,
+  describeCoverage,
+  normalizeHistory,
+  normalizeReading,
+  readingFreshness,
+  validateConfig
+} from "./data.js";
+import { createPasskeyAuth } from "./auth.js";
 
-const MIN_POLL_INTERVAL_MS = 2000;
+export * from "./data.js";
+export * from "./auth.js";
 const MAX_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const CACHE_KEY = "soil-monitor-cache-v1";
-const ACCESS_KEY = "soil-monitor-read-token-v1";
 
 class AuthorizationError extends Error {}
 
-export function clamp(value, minimum, maximum) {
-  return Math.min(maximum, Math.max(minimum, value));
-}
-
-function finiteNumber(value, fallback = null) {
-  if (value === null || value === undefined || value === "") return fallback;
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function nullablePercent(value) {
-  const number = finiteNumber(value);
-  return number === null ? null : clamp(number, 0, 100);
-}
-
-function parseTimestamp(value) {
-  const milliseconds = typeof value === "number" ? value : Date.parse(value);
-  return Number.isFinite(milliseconds) ? milliseconds : null;
-}
-
-export function normalizeReading(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new TypeError("Reading must be a JSON object");
-  }
-
-  const moisture = nullablePercent(payload.moisture);
-  const timestamp = parseTimestamp(payload.timestamp);
-  if (moisture === null || timestamp === null) {
-    throw new TypeError("Reading requires valid moisture and timestamp fields");
-  }
-
-  const rssi = finiteNumber(payload.rssi);
-  const explicitSignal = nullablePercent(payload.signal);
-
-  return Object.freeze({
-    deviceId: String(payload.deviceId || "garden-sensor").slice(0, 64),
-    timestamp,
-    receivedAt: parseTimestamp(payload.receivedAt),
-    moisture,
-    rawAdc: finiteNumber(payload.rawAdc),
-    millivolts: finiteNumber(payload.millivolts),
-    rssi,
-    signal: explicitSignal ?? signalFromRssi(rssi),
-    batteryVoltage: finiteNumber(payload.batteryVoltage),
-    batteryPercent: nullablePercent(payload.batteryPercent),
-    sequence: finiteNumber(payload.sequence)
-  });
-}
-
-export function normalizeHistory(payload) {
-  const source = Array.isArray(payload) ? payload : payload?.readings;
-  if (!Array.isArray(source)) throw new TypeError("History response requires a readings array");
-
-  return source
-    .map((entry) => {
-      try { return normalizeReading(entry); } catch { return null; }
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.timestamp - b.timestamp);
-}
-
-export function signalFromRssi(rssi) {
-  if (!Number.isFinite(rssi)) return null;
-  if (rssi >= -50) return 100;
-  if (rssi <= -100) return 0;
-  return Math.round((rssi + 100) * 2);
-}
-
-export function classifyMoisture(moisture, thresholds = DEFAULT_CONFIG.thresholds) {
-  if (!Number.isFinite(moisture)) return "unknown";
-  if (moisture < thresholds.dryBelow) return "dry";
-  if (moisture < thresholds.healthyBelow) return "healthy";
-  return "wet";
-}
-
-export function computeStats(readings) {
-  if (!readings.length) return null;
-  const values = readings.map((reading) => reading.moisture);
-  const average = values.reduce((total, value) => total + value, 0) / values.length;
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  const comparison = values[Math.max(0, values.length - Math.min(7, values.length))];
-  const delta = values.at(-1) - comparison;
-  const trend = delta > 1.5 ? "Rising" : delta < -1.5 ? "Falling" : "Stable";
-  return { average, minimum, maximum, delta, trend };
-}
-
-export function readingFreshness(timestamp, staleAfterMs, now = Date.now()) {
-  if (!Number.isFinite(timestamp)) return { fresh: false, clockError: false, ageMs: Infinity };
-  const rawAge = now - timestamp;
-  const clockError = rawAge < -120000;
-  return {
-    fresh: !clockError && rawAge <= staleAfterMs,
-    clockError,
-    ageMs: Math.max(0, rawAge)
-  };
-}
-
-export function validateConfig(candidate, locationLike = globalThis.location) {
-  const config = {
-    ...DEFAULT_CONFIG,
-    ...(candidate || {}),
-    thresholds: { ...DEFAULT_CONFIG.thresholds, ...(candidate?.thresholds || {}) }
-  };
-
-  if (!config.apiBaseUrl || typeof config.apiBaseUrl !== "string") {
-    throw new Error("Set apiBaseUrl in config.js before publishing the dashboard.");
-  }
-
-  let url;
-  try { url = new URL(config.apiBaseUrl); } catch {
-    throw new Error("apiBaseUrl in config.js is not a valid URL.");
-  }
-
-  const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
-  const pageIsLocal = locationLike && localHosts.has(locationLike.hostname);
-  if (url.protocol !== "https:" && !(pageIsLocal && url.protocol === "http:")) {
-    throw new Error("apiBaseUrl must use HTTPS (HTTP is allowed only on localhost). ");
-  }
-
-  config.apiBaseUrl = url.href.replace(/\/$/, "");
-  config.pollIntervalMs = Math.max(MIN_POLL_INTERVAL_MS, finiteNumber(config.pollIntervalMs, DEFAULT_CONFIG.pollIntervalMs));
-  config.historyRefreshIntervalMs = Math.max(config.pollIntervalMs, finiteNumber(config.historyRefreshIntervalMs, DEFAULT_CONFIG.historyRefreshIntervalMs));
-  config.requestTimeoutMs = clamp(finiteNumber(config.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs), 1000, 30000);
-  config.staleAfterMs = Math.max(config.pollIntervalMs * 2, finiteNumber(config.staleAfterMs, DEFAULT_CONFIG.staleAfterMs));
-  config.thresholds.dryBelow = clamp(finiteNumber(config.thresholds.dryBelow, 25), 0, 99);
-  config.thresholds.healthyBelow = clamp(finiteNumber(config.thresholds.healthyBelow, 80), config.thresholds.dryBelow + 1, 100);
-  config.thresholds = Object.freeze(config.thresholds);
-  return Object.freeze(config);
-}
-
-export function buildApiUrl(baseUrl, path, search = {}) {
-  const url = new URL(path.replace(/^\/+/, ""), `${baseUrl}/`);
-  for (const [key, value] of Object.entries(search)) url.searchParams.set(key, String(value));
-  return url.href;
-}
-
 class SoilDashboard {
-  constructor(config) {
+  constructor(config, auth = createPasskeyAuth(config)) {
     this.config = config;
+    this.auth = auth;
+    this.session = null;
+    this.cacheRestored = false;
     this.current = null;
     this.history = [];
+    this.historyCoverage = "";
     this.historyHours = 24;
     this.failureCount = 0;
     this.lastHistoryFetchedAt = 0;
     this.pollTimer = null;
     this.pollInProgress = false;
     this.resizeFrame = null;
-    this.readToken = "";
     this.elements = this.collectElements();
   }
 
   collectElements() {
     const ids = [
-      "connection-pill", "connection-label", "forget-key-button", "access-gate", "access-key",
-      "unlock-button", "access-error", "notice", "notice-title", "notice-message",
+      "connection-pill", "connection-label", "manage-passkeys-button", "access-gate",
+      "passkey-sign-in-button", "setup-email", "send-link-button", "access-error",
+      "account-panel", "account-email", "passkey-list", "account-message", "add-passkey-button",
+      "sign-out-button", "notice", "notice-title", "notice-message",
       "retry-button", "moisture-value", "moisture-number", "condition-icon", "condition-label", "moisture-fill",
       "insight-title", "insight-copy", "last-reading", "signal-bars", "signal-value",
       "rssi-value", "battery-fill", "battery-value", "battery-voltage", "sensor-voltage",
       "raw-value", "sequence-value", "device-value", "history-title", "average-value",
+      "power-value", "current-value", "power-source", "mode-value", "firmware-value",
       "minimum-value", "maximum-value", "trend-value", "history-chart", "chart-wrap",
-      "chart-empty", "chart-description", "refresh-label"
+      "chart-empty", "chart-description", "chart-coverage", "refresh-label"
     ];
     return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
   }
 
-  start() {
+  async start() {
     this.bindEvents();
     this.elements["refresh-label"].textContent = `Updates every ${Math.round(this.config.pollIntervalMs / 1000)} seconds`;
-    try { this.readToken = sessionStorage.getItem(ACCESS_KEY) || ""; } catch { this.readToken = ""; }
-    if (!this.readToken) {
-      this.showAccessGate();
-      return;
-    }
-    this.hideAccessGate();
-    this.restoreCache();
-    this.refreshAll();
+    this.auth.onAuthStateChange((_event, session) => {
+      setTimeout(() => this.applySession(session), 0);
+    });
+    await this.applySession(await this.auth.getSession());
   }
 
   bindEvents() {
     this.elements["retry-button"].addEventListener("click", () => this.refreshAll());
-    this.elements["unlock-button"].addEventListener("click", () => this.unlock());
-    this.elements["access-key"].addEventListener("keydown", (event) => {
-      if (event.key === "Enter") this.unlock();
+    this.elements["passkey-sign-in-button"].addEventListener("click", () => this.signInWithPasskey());
+    this.elements["send-link-button"].addEventListener("click", () => this.sendEmailLink());
+    this.elements["setup-email"].addEventListener("keydown", (event) => {
+      if (event.key === "Enter") this.sendEmailLink();
     });
-    this.elements["forget-key-button"].addEventListener("click", () => this.forgetKey());
+    this.elements["manage-passkeys-button"].addEventListener("click", () => this.toggleAccountPanel());
+    this.elements["add-passkey-button"].addEventListener("click", () => this.addPasskey());
+    this.elements["sign-out-button"].addEventListener("click", () => this.signOut());
     document.querySelectorAll("[data-hours]").forEach((button) => {
       button.addEventListener("click", () => {
         this.historyHours = Number(button.dataset.hours);
@@ -211,9 +82,7 @@ class SoilDashboard {
           candidate.setAttribute("aria-pressed", String(selected));
         });
         this.elements["history-title"].textContent = this.historyHours === 168 ? "Last 7 days" : `Last ${this.historyHours} hours`;
-        this.fetchHistory().catch(() => {
-          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Current readings will continue updating.";
-        });
+        this.fetchHistory().catch((error) => this.showHistoryError(error));
       });
     });
 
@@ -229,7 +98,9 @@ class SoilDashboard {
   }
 
   async requestJson(path, search) {
-    if (!this.readToken) throw new AuthorizationError("A read-only access key is required.");
+    const session = await this.auth.getSession();
+    if (!session?.access_token) throw new AuthorizationError("Sign in with a passkey to view garden data.");
+    this.session = session;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
     try {
@@ -238,14 +109,17 @@ class SoilDashboard {
         credentials: "omit",
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${this.readToken}`
+          Authorization: `Bearer ${session.access_token}`
         },
         referrerPolicy: "no-referrer",
         redirect: "error",
         signal: controller.signal
       });
       if (response.status === 401 || response.status === 403) {
-        throw new AuthorizationError("The cloud API did not accept this access key.");
+        const message = response.status === 403
+          ? "This passkey account is not assigned to the garden sensor."
+          : "Your passkey session expired. Sign in again.";
+        throw new AuthorizationError(message);
       }
       if (!response.ok) throw new Error(`Cloud API returned ${response.status}`);
       const contentType = response.headers.get("content-type") || "";
@@ -265,16 +139,14 @@ class SoilDashboard {
     try {
       await this.fetchCurrent();
       if (!this.history.length || Date.now() - this.lastHistoryFetchedAt >= this.config.historyRefreshIntervalMs) {
-        await this.fetchHistory().catch(() => {
-          this.elements["chart-empty"].textContent = "History is temporarily unavailable. Current readings will continue updating.";
-        });
+        await this.fetchHistory().catch((error) => this.showHistoryError(error));
       }
       this.failureCount = 0;
       this.updateFreshnessNotice();
     } catch (error) {
       if (error instanceof AuthorizationError) {
-        this.clearStoredKey();
-        this.readToken = "";
+        await this.auth.signOut().catch(() => {});
+        this.session = null;
         this.showAccessGate(error.message);
         return;
       }
@@ -282,7 +154,7 @@ class SoilDashboard {
       this.showOffline(error instanceof Error ? error.message : "Could not reach the cloud API.");
     } finally {
       this.pollInProgress = false;
-      if (this.readToken) this.scheduleNextPoll();
+      if (this.session?.access_token) this.scheduleNextPoll();
     }
   }
 
@@ -303,6 +175,7 @@ class SoilDashboard {
   async fetchHistory() {
     const payload = await this.requestJson(this.config.historyPath, { hours: this.historyHours });
     this.history = normalizeHistory(payload);
+    this.historyCoverage = describeCoverage(payload, this.historyHours);
     this.lastHistoryFetchedAt = Date.now();
     this.renderHistory();
     this.saveCache();
@@ -349,6 +222,19 @@ class SoilDashboard {
     this.elements["raw-value"].textContent = reading.rawAdc === null ? "Raw ADC unavailable" : `Raw ADC ${Math.round(reading.rawAdc)}`;
     this.elements["sequence-value"].textContent = reading.sequence === null ? "--" : Math.round(reading.sequence).toLocaleString();
     this.elements["device-value"].textContent = reading.deviceId;
+    this.elements["power-value"].textContent = reading.powerMilliwatts === null
+      ? "-- mW" : `${Math.round(reading.powerMilliwatts)} mW`;
+    this.elements["current-value"].textContent = reading.currentMilliamps === null
+      ? "Available in Live mode" : `${Math.round(reading.currentMilliamps)} mA`;
+    this.elements["power-source"].textContent = reading.powerMeasured === null
+      ? "No power telemetry in this sample"
+      : (reading.powerMeasured ? "Measured by current sensor" : "Estimated — current sensor not fitted");
+    const modeLabels = { live: "Live · 2s", fast: "30 seconds", low_power: "5 minutes" };
+    this.elements["mode-value"].textContent = modeLabels[reading.samplingMode] || "--";
+    const build = reading.sensorFirmwareBuild === null ? "" : ` · build ${Math.round(reading.sensorFirmwareBuild)}`;
+    this.elements["firmware-value"].textContent = reading.sensorFirmware
+      ? `Sensor ${reading.sensorFirmware}${build} · Gateway ${reading.gatewayFirmware || "unknown"}`
+      : "Firmware unavailable";
   }
 
   updateFreshnessNotice() {
@@ -391,7 +277,21 @@ class SoilDashboard {
     this.elements["chart-description"].textContent = stats
       ? `${this.history.length} readings. Average ${stats.average.toFixed(1)} percent, minimum ${stats.minimum.toFixed(1)} percent, maximum ${stats.maximum.toFixed(1)} percent, trend ${stats.trend.toLowerCase()}.`
       : "No historical readings are available.";
+    if (this.elements["chart-coverage"]) {
+      this.elements["chart-coverage"].textContent = this.historyCoverage || "";
+    }
     this.drawChart();
+  }
+
+  showHistoryError(error) {
+    const detail = error instanceof Error ? error.message : "Could not load history";
+    this.elements["chart-empty"].textContent =
+      `History is temporarily unavailable (${detail}). Current readings will continue updating.`;
+    if (this.elements["chart-coverage"]) {
+      this.elements["chart-coverage"].textContent = this.history.length
+        ? `History refresh failed: ${detail}. Showing the last loaded log.`
+        : `History request failed: ${detail}.`;
+    }
   }
 
   drawChart() {
@@ -475,52 +375,140 @@ class SoilDashboard {
     this.elements["connection-label"].textContent = label;
   }
 
-  unlock() {
-    const token = this.elements["access-key"].value.trim();
-    if (!token) {
-      this.showAccessGate("Enter the read-only access key supplied with this dashboard.");
+  async applySession(session) {
+    if (!session?.access_token) {
+      this.session = null;
+      this.showAccessGate();
       return;
     }
-    try {
-      sessionStorage.setItem(ACCESS_KEY, token);
-    } catch {
-      this.showAccessGate("This browser blocked temporary storage. Allow session storage and try again.");
-      return;
-    }
-    this.readToken = token;
-    this.elements["access-key"].value = "";
+
+    const sameSession = this.session?.access_token === session.access_token;
+    this.session = session;
+    this.elements["account-email"].textContent = session.user?.email || "Confirmed account";
     this.hideAccessGate();
-    this.refreshAll();
+    if (!this.cacheRestored) {
+      this.restoreCache();
+      this.cacheRestored = true;
+    }
+    if (!sameSession) this.refreshAll();
+    this.renderPasskeys().catch((error) => this.showAccountMessage(authErrorMessage(error), true));
   }
 
-  showAccessGate(message = "") {
+  async signInWithPasskey() {
+    if (!("PublicKeyCredential" in window)) {
+      this.showAccessGate("This browser does not support passkeys. Use current Safari on your Mac or iPhone.");
+      return;
+    }
+    this.setAuthBusy(true);
+    this.showAccessGate();
+    try {
+      await this.applySession(await this.auth.signInWithPasskey());
+    } catch (error) {
+      this.showAccessGate(authErrorMessage(error));
+    } finally {
+      this.setAuthBusy(false);
+    }
+  }
+
+  async sendEmailLink() {
+    const email = this.elements["setup-email"].value.trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      this.showAccessGate("Enter the confirmed owner email address.");
+      return;
+    }
+    this.setAuthBusy(true);
+    try {
+      const redirectTo = `${window.location.origin}${window.location.pathname}`;
+      await this.auth.sendEmailLink(email, redirectTo);
+      this.showAccessGate("Check your email and open the sign-in link on this device.", false);
+    } catch (error) {
+      this.showAccessGate(authErrorMessage(error));
+    } finally {
+      this.setAuthBusy(false);
+    }
+  }
+
+  async addPasskey() {
+    this.elements["add-passkey-button"].disabled = true;
+    this.showAccountMessage("Follow the Face ID or Touch ID prompt…");
+    try {
+      await this.auth.registerPasskey();
+      this.showAccountMessage("Passkey added. It can now sign in without an access key.");
+      await this.renderPasskeys();
+    } catch (error) {
+      this.showAccountMessage(authErrorMessage(error), true);
+    } finally {
+      this.elements["add-passkey-button"].disabled = false;
+    }
+  }
+
+  async renderPasskeys() {
+    const passkeys = await this.auth.listPasskeys();
+    this.elements["passkey-list"].replaceChildren();
+    if (passkeys.length === 0) {
+      const item = document.createElement("li");
+      item.textContent = "No passkey yet — add one before signing out.";
+      this.elements["passkey-list"].append(item);
+      this.elements["account-panel"].hidden = false;
+      return;
+    }
+    for (const passkey of passkeys) {
+      const item = document.createElement("li");
+      const name = passkey.friendly_name || passkey.friendlyName || "Passkey";
+      const lastUsed = passkey.last_used_at || passkey.lastUsedAt;
+      item.textContent = lastUsed
+        ? `${name} · last used ${new Date(lastUsed).toLocaleDateString()}`
+        : name;
+      this.elements["passkey-list"].append(item);
+    }
+  }
+
+  async signOut() {
+    clearTimeout(this.pollTimer);
+    try { await this.auth.signOut(); } catch (error) {
+      this.showAccountMessage(authErrorMessage(error), true);
+      return;
+    }
+    try { sessionStorage.removeItem(CACHE_KEY); } catch { /* Storage is optional. */ }
+    this.session = null;
+    this.current = null;
+    this.history = [];
+    this.showAccessGate();
+  }
+
+  setAuthBusy(busy) {
+    this.elements["passkey-sign-in-button"].disabled = busy;
+    this.elements["send-link-button"].disabled = busy;
+  }
+
+  showAccountMessage(message, isError = false) {
+    this.elements["account-message"].hidden = !message;
+    this.elements["account-message"].textContent = message;
+    this.elements["account-message"].style.color = isError ? "var(--red)" : "var(--cyan)";
+  }
+
+  toggleAccountPanel() {
+    this.elements["account-panel"].hidden = !this.elements["account-panel"].hidden;
+  }
+
+  showAccessGate(message = "", isError = true) {
     clearTimeout(this.pollTimer);
     document.getElementById("main").inert = true;
     this.setConnection("locked", "Locked");
     this.elements["access-gate"].hidden = false;
-    this.elements["forget-key-button"].hidden = true;
+    this.elements["account-panel"].hidden = true;
+    this.elements["manage-passkeys-button"].hidden = true;
     this.elements["access-error"].hidden = !message;
     this.elements["access-error"].textContent = message;
-    this.elements["access-key"].focus();
+    this.elements["access-error"].style.color = isError ? "var(--red)" : "var(--cyan)";
   }
 
   hideAccessGate() {
     document.getElementById("main").inert = false;
     this.elements["access-gate"].hidden = true;
-    this.elements["forget-key-button"].hidden = false;
+    this.elements["manage-passkeys-button"].hidden = false;
     this.elements["access-error"].hidden = true;
     this.elements["access-error"].textContent = "";
-  }
-
-  clearStoredKey() {
-    try { sessionStorage.removeItem(ACCESS_KEY); } catch { /* Storage is optional. */ }
-  }
-
-  forgetKey() {
-    this.clearStoredKey();
-    try { sessionStorage.removeItem(CACHE_KEY); } catch { /* Storage is optional. */ }
-    this.readToken = "";
-    window.location.reload();
   }
 
   showOffline(message) {
@@ -584,6 +572,14 @@ function formatChartTime(timestamp, hours) {
   ).format(new Date(timestamp));
 }
 
+function authErrorMessage(error) {
+  if (!(error instanceof Error)) return "Passkey authentication failed. Try again.";
+  if (error.name === "NotAllowedError") {
+    return "The passkey prompt was cancelled or timed out.";
+  }
+  return error.message || "Passkey authentication failed. Try again.";
+}
+
 function showConfigurationError(message) {
   document.getElementById("access-gate").hidden = true;
   const pill = document.getElementById("connection-pill");
@@ -599,7 +595,9 @@ function showConfigurationError(message) {
 if (typeof document !== "undefined") {
   try {
     const config = validateConfig(window.SOIL_MONITOR_CONFIG);
-    new SoilDashboard(config).start();
+    new SoilDashboard(config).start().catch((error) => {
+      showConfigurationError(error instanceof Error ? error.message : "Authentication setup failed.");
+    });
   } catch (error) {
     showConfigurationError(error instanceof Error ? error.message : "Review config.js.");
   }

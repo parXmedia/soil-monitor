@@ -6,6 +6,12 @@
  * The configured endpoint must be HTTPS and expose read-only sensor data.
  */
 window.SOIL_MONITOR_CONFIG = Object.freeze({
+  // Safe to publish: use the sb_publishable_ key from Supabase Settings → API.
+  // This key identifies the project; the signed-in user's short-lived JWT
+  // authorizes access to garden data.
+  supabaseUrl: "https://hezqmueouqjjgjdkavlc.supabase.co",
+  publishableKey: "sb_publishable_cdPD9fNRgRefdrJZyzodjA_gh5MBIFW",
+
   apiBaseUrl: "https://hezqmueouqjjgjdkavlc.supabase.co/functions/v1/soil-api",
 
   currentPath: "/v1/current",

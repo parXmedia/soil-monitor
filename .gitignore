@@ -11,3 +11,11 @@ include/local_provisioning.h
 .env
 .env.*
 !.env.example
+
+# Exported assistant/session transcripts. These routinely contain Wi-Fi
+# passwords, access tokens, and other credentials pasted during setup, and this
+# repository is public. Never commit them.
+chat.txt
+chat*.txt
+*-transcript.txt
+*-transcript.md

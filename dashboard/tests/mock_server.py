@@ -44,6 +44,8 @@ class MockDashboardHandler(SimpleHTTPRequestHandler):
         if path == "/config.js":
             port = self.server.server_address[1]
             source = f'''window.SOIL_MONITOR_CONFIG = Object.freeze({{
+              supabaseUrl: "http://127.0.0.1:{port}",
+              publishableKey: "sb_publishable_12345678901234567890",
               apiBaseUrl: "http://127.0.0.1:{port}",
               currentPath: "/v1/current",
               historyPath: "/v1/history",
@@ -60,8 +62,29 @@ class MockDashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(source)
             return
 
+        if path == "/vendor/supabase-2.105.0.js":
+            source = b'''window.supabase = { createClient() {
+              const session = { access_token: "header.payload.signature", user: { email: "owner@example.com" } };
+              return { auth: {
+                getSession: async () => ({ data: { session }, error: null }),
+                onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+                signInWithPasskey: async () => ({ data: { session }, error: null }),
+                signInWithOtp: async () => ({ error: null }),
+                registerPasskey: async () => ({ data: { id: "demo-passkey" }, error: null }),
+                passkey: { list: async () => ({ data: [{ friendly_name: "Mock passkey" }], error: null }) },
+                signOut: async () => ({ error: null })
+              }};
+            }};'''
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(source)))
+            self.end_headers()
+            self.wfile.write(source)
+            return
+
         if path == "/v1/current":
-            if self.headers.get("Authorization") != "Bearer demo-read-token":
+            if self.headers.get("Authorization") != "Bearer header.payload.signature":
                 self.send_json({"error": "unauthorized"}, status=401)
                 return
             self.send_json({
@@ -75,11 +98,18 @@ class MockDashboardHandler(SimpleHTTPRequestHandler):
                 "batteryVoltage": 4.05,
                 "batteryPercent": 82,
                 "sequence": 12345,
+                "currentMilliamps": 96,
+                "powerMilliwatts": 389,
+                "powerMeasured": True,
+                "samplingMode": "live",
+                "sensorFirmwareBuild": 196609,
+                "sensorFirmware": "3.0.1",
+                "gatewayFirmware": "3.0.0",
             })
             return
 
         if path == "/v1/history":
-            if self.headers.get("Authorization") != "Bearer demo-read-token":
+            if self.headers.get("Authorization") != "Bearer header.payload.signature":
                 self.send_json({"error": "unauthorized"}, status=401)
                 return
             readings = []
