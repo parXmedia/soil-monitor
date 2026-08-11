@@ -14,7 +14,6 @@ import { createPasskeyAuth } from "./auth.js";
 
 export * from "./data.js";
 export * from "./auth.js";
-
 const MAX_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const CACHE_KEY = "soil-monitor-cache-v1";
 
