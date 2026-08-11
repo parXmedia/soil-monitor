@@ -422,12 +422,19 @@ export class RateLimiter {
 }
 
 export function clientKey(headers: Headers): string {
+  // Supabase Edge runs behind Cloudflare, which supplies this header from the
+  // connection rather than trusting the value sent by the caller.
+  const cloudflare = headers.get("cf-connecting-ip")?.trim();
+  if (cloudflare && cloudflare.length <= 64) return cloudflare;
+
+  // Proxies append their observed address to X-Forwarded-For. The left-most
+  // value can be supplied by the caller, so rate-limit on the last value.
   const forwarded = headers.get("x-forwarded-for");
   if (forwarded !== null && forwarded.length > 0) {
-    const first = forwarded.split(",", 1)[0].trim();
-    if (first.length > 0 && first.length <= 64) return first;
+    const last = forwarded.split(",").at(-1)?.trim();
+    if (last && last.length <= 64) return last;
   }
-  return headers.get("cf-connecting-ip")?.slice(0, 64) ?? "unknown";
+  return "unknown";
 }
 
 export function signalFromRssi(rssi: number): number {

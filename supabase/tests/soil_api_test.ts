@@ -293,12 +293,18 @@ Deno.test("rate limiter caps a flood without blocking normal polling", () => {
   assert(limiter.check("1.2.3.4", start + 60_001).allowed);
 });
 
-Deno.test("client key prefers the first forwarded address and is bounded", () => {
+Deno.test("client key rejects spoofable forwarded prefixes and is bounded", () => {
   const forwarded = new Headers({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" });
-  assert(clientKey(forwarded) === "203.0.113.7");
+  assert(clientKey(forwarded) === "10.0.0.1");
 
   const direct = new Headers({ "cf-connecting-ip": "198.51.100.9" });
   assert(clientKey(direct) === "198.51.100.9");
+
+  const cloudflareWins = new Headers({
+    "cf-connecting-ip": "198.51.100.10",
+    "x-forwarded-for": "203.0.113.8, 10.0.0.2",
+  });
+  assert(clientKey(cloudflareWins) === "198.51.100.10");
 
   assert(clientKey(new Headers()) === "unknown");
 

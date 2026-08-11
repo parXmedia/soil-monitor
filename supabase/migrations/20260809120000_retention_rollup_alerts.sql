@@ -111,8 +111,11 @@ begin
       pg_catalog.round(pg_catalog.avg(sensor_mv))::integer as sensor_mv_avg,
       pg_catalog.round(pg_catalog.avg(espnow_rssi_dbm))::smallint as rssi_avg,
       pg_catalog.round(pg_catalog.avg(battery_mv))::smallint as battery_mv_avg
-    from public.telemetry
-    where sampled_at < cutoff
+    from public.telemetry t
+    where t.sampled_at < cutoff
+      and not exists (
+        select 1 from public.device_state s where s.latest_telemetry_id = t.id
+      )
     group by device_id, pg_catalog.date_trunc('hour', sampled_at)
   )
   insert into public.telemetry_hourly as target (
@@ -121,14 +124,52 @@ begin
   )
   select * from aggregated
   on conflict (device_id, bucket) do update
-  set sample_count = excluded.sample_count,
-      moisture_avg = excluded.moisture_avg,
-      moisture_min = excluded.moisture_min,
-      moisture_max = excluded.moisture_max,
-      raw_adc_avg = excluded.raw_adc_avg,
-      sensor_mv_avg = excluded.sensor_mv_avg,
-      rssi_avg = excluded.rssi_avg,
-      battery_mv_avg = excluded.battery_mv_avg;
+  -- A gateway may replay a 7–30 day-old sample after this hour was already
+  -- rolled up. Merge the new partial aggregate instead of replacing the
+  -- original hour and silently losing its earlier samples.
+  set moisture_avg = case
+        when target.moisture_avg is null then excluded.moisture_avg
+        when excluded.moisture_avg is null then target.moisture_avg
+        else pg_catalog.round(
+          (target.moisture_avg * target.sample_count +
+           excluded.moisture_avg * excluded.sample_count) /
+          (target.sample_count + excluded.sample_count), 2)
+      end,
+      moisture_min = least(target.moisture_min, excluded.moisture_min),
+      moisture_max = greatest(target.moisture_max, excluded.moisture_max),
+      raw_adc_avg = case
+        when target.raw_adc_avg is null then excluded.raw_adc_avg
+        when excluded.raw_adc_avg is null then target.raw_adc_avg
+        else pg_catalog.round(
+          (target.raw_adc_avg::numeric * target.sample_count +
+           excluded.raw_adc_avg::numeric * excluded.sample_count) /
+          (target.sample_count + excluded.sample_count))::integer
+      end,
+      sensor_mv_avg = case
+        when target.sensor_mv_avg is null then excluded.sensor_mv_avg
+        when excluded.sensor_mv_avg is null then target.sensor_mv_avg
+        else pg_catalog.round(
+          (target.sensor_mv_avg::numeric * target.sample_count +
+           excluded.sensor_mv_avg::numeric * excluded.sample_count) /
+          (target.sample_count + excluded.sample_count))::integer
+      end,
+      rssi_avg = case
+        when target.rssi_avg is null then excluded.rssi_avg
+        when excluded.rssi_avg is null then target.rssi_avg
+        else pg_catalog.round(
+          (target.rssi_avg::numeric * target.sample_count +
+           excluded.rssi_avg::numeric * excluded.sample_count) /
+          (target.sample_count + excluded.sample_count))::smallint
+      end,
+      battery_mv_avg = case
+        when target.battery_mv_avg is null then excluded.battery_mv_avg
+        when excluded.battery_mv_avg is null then target.battery_mv_avg
+        else pg_catalog.round(
+          (target.battery_mv_avg::numeric * target.sample_count +
+           excluded.battery_mv_avg::numeric * excluded.sample_count) /
+          (target.sample_count + excluded.sample_count))::smallint
+      end,
+      sample_count = target.sample_count + excluded.sample_count;
 
   get diagnostics bucket_count = row_count;
 
@@ -188,7 +229,7 @@ begin
       (s.last_sampled_at is null
         or s.last_sampled_at <
            pg_catalog.now() - pg_catalog.make_interval(
-             secs => pg_catalog.greatest(d.expected_interval_seconds * 3, 900)
+             secs => greatest(d.expected_interval_seconds * 3, 900)
            )) as offline_now,
       (t.moisture_pct is not null and t.moisture_pct < d.dry_threshold_pct) as dry_now,
       (d.battery_low_mv is not null and t.battery_mv is not null

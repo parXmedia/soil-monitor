@@ -1,0 +1,3 @@
+# Preserve the exact bytes of the audited upstream browser bundle. Its embedded
+# worker source intentionally contains trailing whitespace inside a template.
+dashboard/vendor/supabase-2.105.0.js -text -whitespace

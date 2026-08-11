@@ -1,4 +1,5 @@
 from html.parser import HTMLParser
+import hashlib
 from pathlib import Path
 import re
 import unittest
@@ -145,6 +146,12 @@ class HardeningRegressionTests(unittest.TestCase):
             for path in sorted((PROJECT_ROOT / "src").glob("*.cpp"))
         )
         cls.gitignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+        cls.alert_migration = (
+            PROJECT_ROOT / "supabase" / "migrations" / "20260809120000_retention_rollup_alerts.sql"
+        ).read_text(encoding="utf-8")
+        cls.alert_repair_migration = (
+            PROJECT_ROOT / "supabase" / "migrations" / "20260810180000_repair_alert_evaluation.sql"
+        ).read_text(encoding="utf-8")
 
     def test_history_coverage_is_reported_to_the_reader(self):
         # The old API silently truncated a 7-day request to the newest rows.
@@ -210,3 +217,29 @@ class HardeningRegressionTests(unittest.TestCase):
     def test_transcripts_cannot_be_committed(self):
         # chat.txt held the Wi-Fi password in plaintext and this repo is public.
         self.assertIn("chat.txt", self.gitignore)
+
+    def test_alert_function_uses_postgres_minmax_expression(self):
+        # GREATEST is grammar, not a pg_catalog function. Qualifying it makes
+        # the PL/pgSQL function compile but fail on its first invocation.
+        self.assertIn("greatest(d.expected_interval_seconds * 3, 900)", self.alert_migration)
+        self.assertNotIn("pg_catalog.greatest", self.alert_migration)
+        self.assertIn("create or replace function public.evaluate_alerts()", self.alert_repair_migration)
+        self.assertNotIn("pg_catalog.greatest", self.alert_repair_migration)
+
+    def test_rollup_merges_late_samples_into_existing_hour(self):
+        self.assertIn(
+            "sample_count = target.sample_count + excluded.sample_count",
+            self.alert_migration,
+        )
+        self.assertNotIn("sample_count = excluded.sample_count", self.alert_migration)
+        self.assertGreaterEqual(
+            self.alert_migration.count("where s.latest_telemetry_id = t.id"),
+            2,
+        )
+
+    def test_vendored_supabase_bundle_matches_audited_npm_artifact(self):
+        bundle = (ROOT / "vendor" / "supabase-2.105.0.js").read_bytes()
+        self.assertEqual(
+            "24e8c00dc25da420ee741068b60bcdb5f62cb3598d8834058acf37ec6ee1a724",
+            hashlib.sha256(bundle).hexdigest(),
+        )
