@@ -121,10 +121,6 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("firmwareSha256", self.protocol)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HardeningRegressionTests(unittest.TestCase):
     """Guards for the reliability and honesty fixes, checked statically.
 
@@ -273,3 +269,7 @@ class HardeningRegressionTests(unittest.TestCase):
             "24e8c00dc25da420ee741068b60bcdb5f62cb3598d8834058acf37ec6ee1a724",
             hashlib.sha256(bundle).hexdigest(),
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
