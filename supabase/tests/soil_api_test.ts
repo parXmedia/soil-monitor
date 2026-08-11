@@ -184,6 +184,23 @@ Deno.test("telemetry validator enforces ranges and canonicalizes time", async ()
   );
 });
 
+Deno.test("legacy flashed gateway payload remains ingest-compatible", () => {
+  const reading = validateTelemetry({
+    schema: 1,
+    sampled_at: "2025-08-20T12:34:56Z",
+    moisture_pct: 47,
+    raw_adc: 2100,
+    sensor_mv: 3300,
+    espnow_rssi_dbm: -71,
+    battery_mv: null,
+    battery_percent: null,
+  }, Date.parse("2025-08-20T12:35:00Z"));
+  assert(reading.current_ma === null);
+  assert(reading.power_mw === null);
+  assert(reading.sampling_mode === null);
+  assert(reading.sensor_firmware_build === null);
+});
+
 Deno.test("user JWT, history range, and RSSI mapping are bounded", async () => {
   const token = "header.payload.signature";
   assert(

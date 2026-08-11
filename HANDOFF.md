@@ -41,17 +41,16 @@ set dry_threshold_pct = 25, battery_low_mv = null, alerts_enabled = true
 where device_id = 'garden-sensor-1';
 ```
 
-## 3. Flash both boards
+## 3. Keep the flashed boards in service
 
-Gateway first — it's the one that gained the watchdog, the flash spool, and
-calibration. `pio run -e display_receiver -t upload`.
+No reflash is required for the cloud history repair or passkey rollout. The
+backend keeps accepting the currently flashed gateway's signed schema-1 payload
+and treats newer power, sampling-mode, and firmware-build fields as optional.
 
-Then the sensor: `pio run -e sensor_transmitter -t upload`. The simplified
-sensor stays awake, so its USB port should remain available. Use the BOOT/RESET
-dance only if the normal upload port is unavailable.
-
-After the gateway boots, set an OTA password from the setup portal so future
-firmware goes over Wi-Fi instead of USB.
+The local firmware changes in this repository are future maintenance updates,
+not a deployment claim. Only schedule a board update later if physical access
+becomes practical and you want a firmware-only feature such as additional
+power diagnostics or updated local maintenance behavior.
 
 ## 4. Calibrate the wet endpoint
 

@@ -89,8 +89,9 @@ project root (the directory containing this `supabase` directory).
    supabase db push
    ```
 
-   Apply migrations before flashing gateway v3; otherwise PostgREST does not yet have the new
-   live-power columns and will reject v3 telemetry inserts.
+   No firmware reflash is required for this migration. The ingest endpoint accepts the payload
+   produced by the already-flashed gateway; newer optional power, mode, and firmware diagnostics
+   remain nullable for older boards.
 
 2. In Authentication → Users, create the owner's email account and mark the email confirmed. In the
    SQL editor, provision the logical device and assign it to that Auth user:
